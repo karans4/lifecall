@@ -1,0 +1,26 @@
+# Secrets — never commit
+Sources/Secrets.swift
+.env.local
+CONTEXT.md
+
+# Xcode / build
+build/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+.DS_Store
+
+# InsForge & AI agent skills
+.insforge
+.agent
+.agents
+.augment
+.claude
+.cline
+.github/copilot*
+.kilocode
+.qoder
+.qwen
+.roo
+.trae
+.windsurf
