@@ -10,24 +10,42 @@ strangers puts TCPA/consent/recording liability on us as the platform.
 
 ---
 
-## Where we are (done)
-- Deployed Cloudflare Worker backend (D1 + KV + R2), Apple-verified sessions
+## Where we are (done — as of 2026-06-20 PM)
+- Deployed Cloudflare Worker backend (D1 + KV + R2), **Apple-verified sessions** (fixed
+  a sub-truncation bug; users must re-sign-in once)
 - LLM brain: Kimi K2 via Groq (US), through the Worker
-- Voice: ElevenLabs agent (custom-LLM → Worker); one live ~90s call verified
-- Playbook engine (config-as-pipeline): script, collect fields + priority, urgency
+- **Billing LIVE (Stripe test mode):** prepaid **call-hours**, volume pricing $20→$12/hr
+  floor, per-second debit on call end, in-app webview Checkout, **webhook idempotent**
+  (no double-credit), buy-hours UI. Apple takes 0% (B2B web billing).
+- **Real outbound calling wired** (consent-gated, TCPA): `/v1/dial` + in-app consent
+  attestation + E.164 normalization. Twilio number `+15108801709` imported.
+- **Playbook engine** (config-as-pipeline): script, collect fields + priority, urgency
   tiers + auto-actions, doc routing, calendar config
 - Consented self-clone (built, untested — needs paid ElevenLabs tier)
 - AGPL-3.0, sole copyright (dual-license/monetize preserved)
+
+### Voice stack — DECISION IN PROGRESS
+- ElevenLabs hang-up root-caused + fixed (doubled custom-LLM URL path). Karan disliked
+  ElevenLabs voices; wants OpenAI **onyx**.
+- **Vapi onyx path works** (validated live) but latency too high.
+- **CHOSEN: Cloudflare-native voice agent** (`withVoice`) — prototype DEPLOYED
+  (`lifecall-voice.karans4.workers.dev`, `voice-agent/`): Kimi K2.6 on Workers AI +
+  Workers AI STT/TTS, all co-located (~350–500ms). TTS swappable to onyx/Cartesia.
+  Pending: Karan's mic-test of quality/latency, then iOS (Swift WS/WebRTC) client.
+- Wolf-of-Wall-Street persona, with disclosure + no-fabrication + qualify-out guardrails.
 
 ---
 
 ## P0 — Blockers to charging money
 
 ### Finish the core loop
-- [ ] Fix loud/speakerphone audio (earpiece default or toggle)
-- [ ] Confirm call quality subjectively (sound, smarts, latency)
-- [ ] Resend key → follow-up email + PDF actually send
-- [ ] Wire app → `/v1/leads/extract` (one server-side pipeline, drop client extract)
+- [x] Fix loud/speakerphone audio (earpiece default + in-call speaker toggle)
+- [ ] **Settle the voice stack** (Cloudflare prototype mic-test → confirm quality/latency)
+- [ ] Resend key → follow-up email + PDF actually send (route ready, key not set)
+- [ ] Wire app → `/v1/leads/extract` (server pipeline ready; PDF/email still on-device)
+- [ ] **Server-authoritative metering** — debit call-seconds from true call duration,
+      not the client (matters now that hours = money)
+- [ ] Make **in-app test calls free** (Karan: in-app is test-only, shouldn't burn hours)
 - [ ] Test voice cloning on a paid ElevenLabs tier; per-rep voice override
 
 ### Multi-tenant (today it's effectively single-user)
@@ -37,16 +55,20 @@ strangers puts TCPA/consent/recording liability on us as the platform.
 - [ ] In-app Playbook editor (the product's authoring surface)
 
 ### Billing
-- [ ] Stripe: subscription tiers + usage-based overage (call minutes)
-- [ ] Hard cost caps per account (runaway protection on ElevenLabs/OpenRouter/Twilio)
-- [ ] Per-call cost tracking → margin visibility
+- [x] Stripe Checkout + webhook (prepaid call-hours, volume pricing) — **idempotent**
+- [x] In-app webview Checkout (closes on success) + buy-hours UI + balance polling
+- [ ] Hard cost caps per account (runaway protection on Twilio/voice/LLM)
+- [ ] Per-call cost tracking → margin visibility; flip Stripe to live keys
+- [ ] Dev/prod build configs before going live (separate worker + Stripe test/live)
 
 ### Compliance & legal (gates the launch)
-- [ ] TCPA: consent capture + audit trail, calling-hours windows, DNC scrubbing
+- [~] TCPA consent: capture route + in-app attestation + audit trail done; still need
+      calling-hours windows + DNC scrubbing
 - [ ] Per-state call-recording consent; AI disclosure (done) surfaced in record
 - [ ] PII: retention policy, deletion (GDPR/CCPA), encryption at rest
 - [ ] Terms of Service + Privacy Policy + acceptable-use (ban illegal calling)
-- [ ] Close out `SECURITY_REVIEW.md` items; verify Worker migration killed the criticals
+- [x] Worker migration killed the client-side-key criticals (keys server-side, owner-
+      scoped data, private R2) — `SECURITY_REVIEW.md`. Remaining: metering trust, caps.
 
 ---
 
