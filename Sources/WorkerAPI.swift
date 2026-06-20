@@ -147,6 +147,22 @@ enum WorkerAPI {
         return obj?["voice_id"] as? String ?? ""
     }
 
+    // MARK: Billing (Stripe via web — 0% to Apple)
+
+    /// Create a Stripe Checkout session and return its URL (open in a browser).
+    static func checkoutURL() async throws -> String {
+        let data = try await request("/v1/billing/checkout", method: "POST", json: [:])
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return obj?["url"] as? String ?? ""
+    }
+
+    /// Current subscription state for the signed-in account.
+    static func billingStatus() async throws -> (tier: String?, active: Bool) {
+        let data = try await request("/v1/billing/status")
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return (obj?["tier"] as? String, obj?["active"] as? Bool ?? false)
+    }
+
     // MARK: Outbound dial (consent-gated server-side)
 
     static func dial(to number: String) async throws {

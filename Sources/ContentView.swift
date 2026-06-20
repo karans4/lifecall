@@ -9,6 +9,8 @@ struct ContentView: View {
     @State private var pulse = false
     @State private var selectedLead: Lead?
     @State private var showVoiceClone = false
+    @State private var isPro = false
+    @Environment(\.openURL) private var openURL
 
     private var isLive: Bool { voice.state == .active }
 
@@ -21,7 +23,10 @@ struct ContentView: View {
         }
         .tint(.cyan)
         .preferredColorScheme(.dark)
-        .onAppear { voice.refreshLeads() }
+        .onAppear {
+            voice.refreshLeads()
+            Task { isPro = (try? await WorkerAPI.billingStatus().active) ?? false }
+        }
         .sheet(item: $selectedLead) { lead in
             LeadDetailView(lead: lead)
         }
@@ -74,6 +79,19 @@ struct ContentView: View {
             Text("Your AI life-insurance closer")
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.55))
+
+            if !isPro {
+                Button {
+                    Task { if let s = try? await WorkerAPI.checkoutURL(), let u = URL(string: s) { openURL(u) } }
+                } label: {
+                    Label("Upgrade to Pro", systemImage: "sparkles")
+                        .font(.caption.bold())
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Capsule().fill(LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing)))
+                        .foregroundStyle(.white)
+                }
+                .padding(.top, 4)
+            }
         }
         .padding(.top, 8)
     }
