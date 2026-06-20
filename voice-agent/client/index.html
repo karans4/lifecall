@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LifeCall Voice (Cloudflare) — Test</title>
+<style>
+  body{font-family:-apple-system,system-ui,sans-serif;background:#0c1229;color:#fff;margin:0;padding:40px;max-width:560px;margin:0 auto;}
+  h1{font-size:22px;} .sub{color:#88a;font-size:13px;margin-bottom:24px;}
+  button{font-size:16px;font-weight:600;padding:12px 20px;border:none;border-radius:12px;margin-right:10px;cursor:pointer;}
+  #start{background:#22b8eb;color:#fff;} #stop{background:#e0556a;color:#fff;} #mute{background:#33415a;color:#fff;}
+  #status{margin:20px 0;color:#9fd;font-weight:600;}
+  #log{margin-top:20px;line-height:1.6;} #log .err{color:#f88;}
+  #log b{color:#9bf;}
+</style>
+</head>
+<body>
+  <h1>🛡️ LifeCall Voice — Cloudflare-native test</h1>
+  <div class="sub">Kimi K2.6 + Workers AI STT/TTS, all co-located. Talk to Jordan.</div>
+  <button id="start">Start call</button>
+  <button id="stop">End</button>
+  <button id="mute">Mute</button>
+  <div id="status">idle</div>
+  <div id="log"></div>
+  <script type="module" src="./bundle.js"></script>
+</body>
+</html>

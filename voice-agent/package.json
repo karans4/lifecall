@@ -1,0 +1,20 @@
+{
+  "name": "lifecall-voice-agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@cloudflare/voice": "^0.3.2",
+    "agents": "^0.16.2",
+    "ai": "^6.0.208",
+    "workers-ai-provider": "^3.2.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "wrangler": "^4"
+  }
+}

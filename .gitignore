@@ -29,3 +29,7 @@ DerivedData/
 .roo
 .trae
 .windsurf
+
+# Node
+node_modules/
+voice-agent/client/bundle.js

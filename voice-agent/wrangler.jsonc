@@ -1,0 +1,13 @@
+{
+  "name": "lifecall-voice",
+  "compatibility_date": "2026-06-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "src/server.ts",
+  "ai": { "binding": "AI" },
+  "durable_objects": {
+    "bindings": [{ "name": "LifeCallVoiceAgent", "class_name": "LifeCallVoiceAgent" }]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["LifeCallVoiceAgent"] }
+  ]
+}
