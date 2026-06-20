@@ -15,10 +15,29 @@ GUARDRAILS: you ARE an AI and disclose it; NEVER lie, invent guarantees, or miss
 FLOW: rapport → bridge ("here's all I'm here to do…") → motive → fact-find (DIME) → health knockouts → budget → recommend a real carrier/product → close. Say money in words ("sixty-five dollars a month"), never "$65". Confirm email letter-by-letter. Book a concrete follow-up. End your turn with "goodbye" to close cleanly.
 Keep responses short and conversational — one idea, then a question.`;
 
+// onyx via OpenAI TTS — a custom TTSProvider. ~$0.015/1k chars (cheap). Needs
+// OPENAI_API_KEY secret + billing on the OpenAI account. Returns mp3 bytes; if
+// the pipeline needs raw PCM instead, switch response_format to "pcm".
+class OnyxTTS {
+  constructor(private apiKey: string) {}
+  async synthesize(text: string, signal?: AbortSignal): Promise<ArrayBuffer | null> {
+    const res = await fetch("https://api.openai.com/v1/audio/speech", {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "tts-1", voice: "onyx", input: text, response_format: "mp3" }),
+      signal,
+    });
+    if (!res.ok) return null;
+    return res.arrayBuffer();
+  }
+}
+
 const VoiceAgent = withVoice(Agent);
 
 export class LifeCallVoiceAgent extends VoiceAgent<Env> {
   transcriber = new WorkersAIFluxSTT(this.env.AI);
+  // Aura-2 (works now). Once OpenAI billing is funded, flip to onyx:
+  //   tts = new OnyxTTS(this.env.OPENAI_API_KEY);
   tts = new WorkersAITTS(this.env.AI);
 
   async onCallStart(connection: Connection) {
