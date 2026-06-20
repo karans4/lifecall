@@ -28,7 +28,6 @@ final class VoiceManager: ObservableObject {
 
     private var conversation: Conversation?
     private var cancellables = Set<AnyCancellable>()
-    private var callStartedAt: Date?
 
     func start() {
         state = .connecting
@@ -71,19 +70,12 @@ final class VoiceManager: ObservableObject {
         switch st {
         case .idle:       state = .idle
         case .connecting: state = .connecting
-        case .active:     state = .active; if callStartedAt == nil { callStartedAt = Date() }
-        case .ended:      state = .ended; meterCall(); captureLead()
+        case .active:     state = .active
+        // In-app calls are a free test surface — capture the lead, but do NOT debit
+        // paid hours (those bill real outbound phone calls). See WorkerAPI /v1/dial.
+        case .ended:      state = .ended; captureLead()
         case .error:      state = .idle
         }
-    }
-
-    /// Debit the call's talk time from the account balance.
-    private func meterCall() {
-        guard let started = callStartedAt else { return }
-        let seconds = Int(Date().timeIntervalSince(started).rounded())
-        callStartedAt = nil
-        guard seconds > 0 else { return }
-        Task { try? await WorkerAPI.callEnded(seconds: seconds) }
     }
 
     /// On call end: extract a structured lead, save it, and send the follow-up.

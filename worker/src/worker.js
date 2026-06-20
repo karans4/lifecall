@@ -451,10 +451,17 @@ async function voiceTokenRoute(req, env) {
   const { agentId } = await req.json();
   if (!agentId) return err(400, "agentId required");
 
-  // Gate on balance — need at least a minute of call time. Actual seconds are
-  // debited on call end (/v1/calls/end). No charge if balance is too low.
-  const row = await env.DB.prepare("SELECT credit_seconds FROM subscriptions WHERE owner = ?").bind(uid).first();
-  if ((row?.credit_seconds || 0) < MIN_START_SECONDS) return err(402, "out of call time — buy more hours");
+  // In-app voice (this token route) is a FREE TEST surface — the rep talking to
+  // their own agent. It does NOT require or debit paid hours (those bill real
+  // OUTBOUND phone calls via /v1/dial). Bound it with a generous free daily cap
+  // so it can't be abused into unlimited free ElevenLabs minutes.
+  if (env.USAGE) {
+    const cap = Number(env.DAILY_TEST_CALL_CAP) || 30;
+    const tkey = `testcall:${uid}:${new Date().toISOString().slice(0, 10)}`;
+    const used = Number(await env.USAGE.get(tkey)) || 0;
+    if (used >= cap) return err(429, "daily test-call limit reached");
+    await env.USAGE.put(tkey, String(used + 1), { expirationTtl: 60 * 60 * 26 });
+  }
 
   const res = await fetch(
     `https://api.elevenlabs.io/v1/convai/conversation/token?agent_id=${encodeURIComponent(agentId)}`,
