@@ -176,6 +176,15 @@ async function chatRoute(req, env) {
 
   const body = await req.json();
   if (!body.model || body.model === "default") body.model = env.OPENROUTER_MODEL;
+  // Pin to US-based inference hosts and forbid any provider that logs/trains on
+  // prompts — keeps the (open-weight) model's data on US soil for PII compliance.
+  if (env.OPENROUTER_PROVIDERS) {
+    body.provider = {
+      only: env.OPENROUTER_PROVIDERS.split(",").map((s) => s.trim()),
+      data_collection: "deny",
+      allow_fallbacks: true,
+    };
+  }
   const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
