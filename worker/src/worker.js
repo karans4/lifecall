@@ -198,6 +198,7 @@ export default {
       if (req.method === "POST" && path === "/v1/voice/clone") return voiceCloneRoute(req, env);
       if (req.method === "POST" && path === "/v1/calls/end") return callEndRoute(req, env);
       if (req.method === "POST" && path === "/v1/consent") return consentRoute(req, env);
+      if (path === "/v1/dnc") return dncRoute(req, env);
       if (req.method === "POST" && path === "/v1/dial") return dialRoute(req, env);
       if (req.method === "GET" && path === "/v1/billing/packs") return packsRoute();
       if (req.method === "POST" && path === "/v1/billing/checkout") return checkoutRoute(req, env);
@@ -540,6 +541,28 @@ async function consentRoute(req, env) {
   return json(200, { phone: num, consented: true });
 }
 
+// GET /v1/dnc -> owner's Do-Not-Call list ; POST { phone, reason } adds to it.
+async function dncRoute(req, env) {
+  const uid = await requireUser(req, env);
+  if (!uid) return err(401, "unauthorized");
+  if (req.method === "GET") {
+    const { results } = await env.DB.prepare(
+      "SELECT phone, added_at, reason FROM dnc WHERE owner = ? ORDER BY added_at DESC"
+    ).bind(uid).all();
+    return json(200, results);
+  }
+  if (req.method === "POST") {
+    const { phone, reason } = await req.json();
+    if (!phone) return err(400, "phone required");
+    await env.DB.prepare(
+      `INSERT INTO dnc (owner, phone, added_at, reason) VALUES (?,?,?,?)
+       ON CONFLICT(owner, phone) DO UPDATE SET added_at=excluded.added_at, reason=excluded.reason`
+    ).bind(uid, e164(phone), new Date().toISOString(), reason || "manual").run();
+    return json(200, { phone: e164(phone), dnc: true });
+  }
+  return err(405, "method not allowed");
+}
+
 // POST /v1/dial { to } — consent-gated outbound. Requires a recorded consent row.
 // Actual call placement (Twilio + ElevenLabs agent) is wired in the next phase.
 async function dialRoute(req, env) {
@@ -548,6 +571,12 @@ async function dialRoute(req, env) {
   const { to } = await req.json();
   if (!to) return err(400, "to required");
   const num = e164(to);
+
+  // TCPA: Do-Not-Call overrides everything — never dial a DNC number.
+  const onDnc = await env.DB.prepare(
+    "SELECT phone FROM dnc WHERE owner = ? AND phone = ?"
+  ).bind(uid, num).first();
+  if (onDnc) return err(403, "number is on your Do-Not-Call list");
 
   // TCPA: refuse any number without a recorded consent.
   const consent = await env.DB.prepare(

@@ -55,3 +55,13 @@ CREATE TABLE IF NOT EXISTS consents (
   source      TEXT,                            -- how consent was captured
   PRIMARY KEY (owner, phone)
 );
+
+-- Do-Not-Call list (TCPA). A number here is NEVER dialed, even if consented —
+-- DNC overrides consent. Empty by default, so it can't block anything until used.
+CREATE TABLE IF NOT EXISTS dnc (
+  owner     TEXT NOT NULL,
+  phone     TEXT NOT NULL,                     -- E.164
+  added_at  TEXT NOT NULL,
+  reason    TEXT,
+  PRIMARY KEY (owner, phone)
+);
