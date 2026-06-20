@@ -11,6 +11,8 @@ OPENROUTER_REFERER = "https://lifecall.app"
 USER_MONTHLY_CAP   = "2000"                  # per-user request cap / month (429 when hit)
 GLOBAL_MONTHLY_CAP = "100000"                # global request cap / month (503 when hit)
 EMAIL_FROM         = "Jordan <jordan@lifecall.app>"
+ELEVENLABS_AGENT_ID        = "agent_3101kvhs4g20f01t75rbs6bj8702"
+ELEVENLABS_PHONE_NUMBER_ID = "phnum_5001kvjyrtq9fbp9qea9ejme8y5n"
 STRIPE_PRICE_PRO   = "price_1TkR3i3Kuauynw4HZxP3xyAp"  # LifeCall Pro $99/mo (test)
 
 # Per-user metering + session cache (eventually-consistent, fine for soft limits).

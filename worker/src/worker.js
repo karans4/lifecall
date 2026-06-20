@@ -502,12 +502,31 @@ async function dialRoute(req, env) {
   if (!uid) return err(401, "unauthorized");
   const { to } = await req.json();
   if (!to) return err(400, "to required");
-  const row = await env.DB.prepare(
+
+  // TCPA: refuse any number without a recorded consent.
+  const consent = await env.DB.prepare(
     "SELECT phone FROM consents WHERE owner = ? AND phone = ?"
   ).bind(uid, to).first();
-  if (!row) return err(403, "no consent on file for this number");
-  // TODO(phase 2): trigger ElevenLabs agent outbound call via Twilio.
-  return json(501, { error: "dialing not yet wired", consent: "ok" });
+  if (!consent) return err(403, "no consent on file for this number");
+
+  // Need enough balance to start.
+  const bal = await env.DB.prepare("SELECT credit_seconds FROM subscriptions WHERE owner = ?").bind(uid).first();
+  if ((bal?.credit_seconds || 0) < MIN_START_SECONDS) return err(402, "out of call time — buy more hours");
+
+  // Place the outbound call via ElevenLabs → Twilio.
+  const res = await fetch("https://api.elevenlabs.io/v1/convai/twilio/outbound-call", {
+    method: "POST",
+    headers: { "xi-api-key": env.ELEVENLABS_API_KEY, "content-type": "application/json" },
+    body: JSON.stringify({
+      agent_id: env.ELEVENLABS_AGENT_ID,
+      agent_phone_number_id: env.ELEVENLABS_PHONE_NUMBER_ID,
+      to_number: to,
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return err(502, `dial failed: ${res.status} ${JSON.stringify(data).slice(0, 200)}`);
+  // Metering: the post-call webhook (or conversation poll) debits actual duration. TODO.
+  return json(200, { calling: to, conversation_id: data.conversation_id || data.callSid || null });
 }
 
 // ---- billing (Stripe) — prepaid CALL HOURS, volume pricing -----------------
