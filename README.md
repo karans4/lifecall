@@ -65,3 +65,12 @@ xcodebuild -project LifeCall.xcodeproj -scheme LifeCall \
   secrets live in the Worker (Cloudflare secrets). See `worker/README.md`.
 - Outbound phone calls are consent-gated server-side (TCPA). The agent discloses
   it's an AI on every call.
+
+## License
+
+Licensed under the **GNU Affero General Public License v3.0** — see [LICENSE](LICENSE).
+
+AGPL's network clause matters here: if you run a modified version of LifeCall as a
+hosted service, you must make your modified source available to its users.
+
+© 2026 Karan Sharma
