@@ -588,6 +588,16 @@ async function dialRoute(req, env) {
   const bal = await env.DB.prepare("SELECT credit_seconds FROM subscriptions WHERE owner = ?").bind(uid).first();
   if ((bal?.credit_seconds || 0) < MIN_START_SECONDS) return err(402, "out of call time — buy more hours");
 
+  // Hard daily dial cap per account — runaway/abuse protection on telephony spend.
+  // High default; tune via DAILY_DIAL_CAP. Counts attempts, resets daily.
+  if (env.USAGE) {
+    const cap = Number(env.DAILY_DIAL_CAP) || 200;
+    const dkey = `dials:${uid}:${new Date().toISOString().slice(0, 10)}`;
+    const used = Number(await env.USAGE.get(dkey)) || 0;
+    if (used >= cap) return err(429, "daily call limit reached");
+    await env.USAGE.put(dkey, String(used + 1), { expirationTtl: 60 * 60 * 26 });
+  }
+
   // Place the outbound call via ElevenLabs → Twilio.
   const res = await fetch("https://api.elevenlabs.io/v1/convai/twilio/outbound-call", {
     method: "POST",
