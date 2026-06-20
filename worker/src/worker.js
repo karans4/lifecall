@@ -23,6 +23,17 @@ const json = (status, body) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...CORS } });
 const err = (status, msg) => json(status, { error: msg });
 
+// Normalize a US-ish phone to E.164 so consent + dialing agree regardless of how
+// the user typed it (4143167093 / 414-316-7093 / +14143167093 all → +14143167093).
+function e164(raw) {
+  if (!raw) return raw;
+  if (raw.trim().startsWith("+")) return "+" + raw.replace(/[^\d]/g, "");
+  const d = raw.replace(/[^\d]/g, "");
+  if (d.length === 10) return "+1" + d;
+  if (d.length === 11 && d.startsWith("1")) return "+" + d;
+  return "+" + d;
+}
+
 function safeEqual(a, b) {
   if (a.length !== b.length) return false;
   let out = 0;
@@ -509,11 +520,12 @@ async function consentRoute(req, env) {
   if (!uid) return err(401, "unauthorized");
   const { phone, source } = await req.json();
   if (!phone) return err(400, "phone required");
+  const num = e164(phone);
   await env.DB.prepare(
     `INSERT INTO consents (owner, phone, granted_at, source) VALUES (?,?,?,?)
      ON CONFLICT(owner, phone) DO UPDATE SET granted_at=excluded.granted_at, source=excluded.source`
-  ).bind(uid, phone, new Date().toISOString(), source || "manual").run();
-  return json(200, { phone, consented: true });
+  ).bind(uid, num, new Date().toISOString(), source || "manual").run();
+  return json(200, { phone: num, consented: true });
 }
 
 // POST /v1/dial { to } — consent-gated outbound. Requires a recorded consent row.
@@ -523,11 +535,12 @@ async function dialRoute(req, env) {
   if (!uid) return err(401, "unauthorized");
   const { to } = await req.json();
   if (!to) return err(400, "to required");
+  const num = e164(to);
 
   // TCPA: refuse any number without a recorded consent.
   const consent = await env.DB.prepare(
     "SELECT phone FROM consents WHERE owner = ? AND phone = ?"
-  ).bind(uid, to).first();
+  ).bind(uid, num).first();
   if (!consent) return err(403, "no consent on file for this number");
 
   // Need enough balance to start.
@@ -541,7 +554,7 @@ async function dialRoute(req, env) {
     body: JSON.stringify({
       agent_id: env.ELEVENLABS_AGENT_ID,
       agent_phone_number_id: env.ELEVENLABS_PHONE_NUMBER_ID,
-      to_number: to,
+      to_number: num,
     }),
   });
   const data = await res.json().catch(() => ({}));

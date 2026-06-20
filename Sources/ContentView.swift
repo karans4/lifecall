@@ -13,6 +13,8 @@ struct ContentView: View {
     @State private var showBilling = false
     @State private var didPurchase = false
     @State private var settling = false   // polling for the webhook to credit hours
+    @State private var showConsentAlert = false
+    @State private var pendingNumbers: [String] = []
 
     private var isLive: Bool { voice.state == .active }
 
@@ -31,6 +33,12 @@ struct ContentView: View {
         }
         .sheet(item: $selectedLead) { lead in
             LeadDetailView(lead: lead)
+        }
+        .alert("Confirm consent to call", isPresented: $showConsentAlert) {
+            Button("I have consent — call") { placeCalls() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("By law (TCPA), you may only call people who consented. Confirm you have consent for \(pendingNumbers.count) number\(pendingNumbers.count == 1 ? "" : "s").")
         }
     }
 
@@ -369,15 +377,20 @@ struct ContentView: View {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         guard !numbers.isEmpty else { dialStatus = "Enter a phone number"; return }
+        pendingNumbers = numbers
+        showConsentAlert = true   // rep must attest consent before we dial
+    }
 
+    /// Record consent (the rep's attestation) then place the calls.
+    private func placeCalls() {
         isDialing = true
         dialStatus = ""
         Task {
-            var placed = 0
-            var failed = 0
-            for number in numbers {
+            var placed = 0, failed = 0
+            for number in pendingNumbers {
                 do {
-                    try await voice.dial(to: number)   // Worker enforces consent (TCPA)
+                    try await WorkerAPI.recordConsent(phone: number, source: "rep attested in-app")
+                    try await voice.dial(to: number)
                     placed += 1
                 } catch {
                     failed += 1
@@ -385,7 +398,7 @@ struct ContentView: View {
             }
             dialStatus = failed == 0
                 ? "Placed \(placed) call\(placed == 1 ? "" : "s") ✓ — lead lands when it ends"
-                : "Placed \(placed) ✓  ·  \(failed) failed (need consent on file)"
+                : "Placed \(placed) ✓  ·  \(failed) failed"
             isDialing = false
         }
     }

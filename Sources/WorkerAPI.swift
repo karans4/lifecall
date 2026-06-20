@@ -176,7 +176,13 @@ enum WorkerAPI {
         _ = try await request("/v1/calls/end", method: "POST", json: ["seconds": seconds])
     }
 
-    // MARK: Outbound dial (consent-gated server-side)
+    // MARK: Consent + outbound dial (consent-gated server-side)
+
+    /// Record consent to call a number (TCPA audit trail). The signed-in rep
+    /// attests this; `source` documents how consent was obtained.
+    static func recordConsent(phone: String, source: String) async throws {
+        _ = try await request("/v1/consent", method: "POST", json: ["phone": phone, "source": source])
+    }
 
     static func dial(to number: String) async throws {
         _ = try await request("/v1/dial", method: "POST", json: ["to": number])
