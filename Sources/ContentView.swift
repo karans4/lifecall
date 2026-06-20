@@ -11,6 +11,8 @@ struct ContentView: View {
     @State private var showVoiceClone = false
     @State private var balanceSeconds = 0
     @State private var showBilling = false
+    @State private var didPurchase = false
+    @State private var settling = false   // polling for the webhook to credit hours
 
     private var isLive: Bool { voice.state == .active }
 
@@ -70,6 +72,22 @@ struct ContentView: View {
         Task { balanceSeconds = (try? await WorkerAPI.balanceSeconds()) ?? 0 }
     }
 
+    /// After a purchase, poll until the Stripe webhook credits the account — up to
+    /// 5 minutes — showing a loading state on the hours chip the whole time.
+    private func startSettling() {
+        settling = true
+        let before = balanceSeconds
+        Task {
+            for _ in 0..<75 {                        // 75 × 4s = 5 min
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                let now = (try? await WorkerAPI.balanceSeconds()) ?? before
+                if now > before { balanceSeconds = now; settling = false; return }
+            }
+            settling = false                          // timed out
+            refreshBalance()
+        }
+    }
+
     private func hideKeyboard() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
@@ -90,15 +108,25 @@ struct ContentView: View {
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.55))
 
-            Button { showBilling = true } label: {
-                Label(balanceLabel, systemImage: "clock.badge.checkmark")
-                    .font(.caption.bold())
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(Capsule().fill(LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing)))
-                    .foregroundStyle(.white)
+            Button { if !settling { showBilling = true } } label: {
+                HStack(spacing: 6) {
+                    if settling {
+                        ProgressView().tint(.white).scaleEffect(0.7)
+                        Text("Adding hours…")
+                    } else {
+                        Image(systemName: "clock.badge.checkmark")
+                        Text(balanceLabel)
+                    }
+                }
+                .font(.caption.bold())
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(Capsule().fill(LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing)))
+                .foregroundStyle(.white)
             }
             .padding(.top, 4)
-            .sheet(isPresented: $showBilling, onDismiss: { refreshBalance() }) { BillingView() }
+            .sheet(isPresented: $showBilling, onDismiss: {
+                if didPurchase { didPurchase = false; startSettling() } else { refreshBalance() }
+            }) { BillingView(didPurchase: $didPurchase) }
         }
         .padding(.top, 8)
     }

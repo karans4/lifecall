@@ -1,11 +1,15 @@
 import SwiftUI
 
 /// Buy prepaid call hours. Volume pricing — $/hr drops with bigger packs.
-/// Checkout happens on the web (Stripe), so Apple takes nothing.
+/// Checkout runs in an in-app webview (Stripe), so Apple takes nothing and the
+/// flow never leaves the app.
 struct BillingView: View {
+    /// Set true when a Checkout completed, so the parent can start polling the balance.
+    @Binding var didPurchase: Bool
+
     @State private var packs: [WorkerAPI.Pack] = []
     @State private var loadingPack: String?
-    @Environment(\.openURL) private var openURL
+    @State private var checkoutURL: URL?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -34,6 +38,12 @@ struct BillingView: View {
             }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
             .task { packs = (try? await WorkerAPI.packs()) ?? [] }
+            .sheet(item: $checkoutURL) { u in
+                CheckoutWebView(url: u) { success in
+                    checkoutURL = nil
+                    if success { didPurchase = true; dismiss() }
+                }
+            }
         }
         .preferredColorScheme(.dark)
     }
@@ -62,9 +72,11 @@ struct BillingView: View {
         Task {
             defer { loadingPack = nil }
             if let s = try? await WorkerAPI.checkoutURL(packId: p.id), let u = URL(string: s) {
-                openURL(u)
-                dismiss()
+                checkoutURL = u
             }
         }
     }
 }
+
+// Allow presenting a sheet keyed on the checkout URL.
+extension URL: Identifiable { public var id: String { absoluteString } }
