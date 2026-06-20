@@ -47,7 +47,7 @@ const PRIORITY_NOTE = {
 
 /// Build the live-call system prompt from a playbook (fields ordered by urgency).
 export function buildSystemPrompt(pb) {
-  const fields = [...pb.collect]
+  const fields = [...(pb.collect || [])]
     .sort((a, b) => (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9))
     .map((f) => `- ${f.key}: ${f.prompt} — ${PRIORITY_NOTE[f.priority] || ""}`)
     .join("\n");
@@ -62,8 +62,8 @@ export function buildSystemPrompt(pb) {
 /// Build the post-call extraction prompt: pull the collect[] fields + summary +
 /// fact_find + outcome, and pick the urgency tier by its criteria.
 export function buildExtractionPrompt(pb, transcript, nowISO) {
-  const keys = pb.collect.map((f) => f.key).join(", ");
-  const tiers = pb.urgencyTiers.map((t) => `"${t.name}" (${t.criteria})`).join("; ");
+  const keys = (pb.collect || []).map((f) => f.key).join(", ");
+  const tiers = (pb.urgencyTiers || []).map((t) => `"${t.name}" (${t.criteria})`).join("; ");
   return `From this sales call transcript, extract a JSON object.
 Fields to extract: ${keys}.
 For callback_at, if a relative follow-up time was agreed ("in an hour", "tomorrow at 2"), output an absolute ISO 8601 timestamp relative to NOW=${nowISO}; else null.
