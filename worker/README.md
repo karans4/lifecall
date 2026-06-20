@@ -4,6 +4,17 @@ The Cloudflare Worker backend. Holds every API key server-side, verifies Sign in
 with Apple, owns the leads database, serves private PDFs, proxies the LLM, and sends
 email. This replaces Insforge and resolves the client-side-key vulnerabilities.
 
+## Status (deployed)
+
+- **Live:** `https://lifecall.karans4.workers.dev`
+- **Provisioned:** D1 `lifecall` (leads + playbooks), KV `USAGE` (metering),
+  R2 `lifecall-documents` (private PDFs). Schema applied.
+- **Secrets set:** `SESSION_SECRET` ✅
+- **Secrets still needed** (routes return 503 until set):
+  `OPENROUTER_API_KEY` (LLM + extraction), `CUSTOM_LLM_TOKEN` (ElevenLabs → LLM proxy),
+  `ELEVENLABS_API_KEY` (+ create the agent, set `elevenLabsAgentId` in the app),
+  `RESEND_API_KEY` (email). `TWILIO_*` for outbound phone (phase 2).
+
 ## Routes
 
 | Method | Path | Auth | Purpose |

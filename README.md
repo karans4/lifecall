@@ -45,11 +45,18 @@ every secret server-side. Free tier runs fully on-device (iOS 26 FoundationModel
 - **iOS 26 on-device** — free tier: FoundationModels + SpeechAnalyzer + AVSpeech.
 - **SwiftUI** — iOS 17+, project generated with [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 
+## Status
+
+Backend is **live** at `https://lifecall.karans4.workers.dev` (D1 + KV + R2 +
+Sign in with Apple sessions deployed). Remaining setup is provider API keys —
+`OPENROUTER_API_KEY`, `ELEVENLABS_API_KEY` (+ agent), `RESEND_API_KEY`,
+`CUSTOM_LLM_TOKEN` — see [worker/README.md](worker/README.md).
+
 ## Build
 
 ```sh
-# 1. Deploy the backend and point the app at it
-#    (see worker/README.md), then set Config.workerBaseURL + elevenLabsAgentId.
+# 1. Backend is already deployed (see worker/README.md). The app's
+#    Config.workerBaseURL points at it; set elevenLabsAgentId once the agent exists.
 
 # 2. Generate the Xcode project
 xcodegen generate
