@@ -309,6 +309,18 @@ async function leadsRoute(req, env) {
 
 const rowToLead = (r) => ({ ...r, fact_find: r.fact_find ? JSON.parse(r.fact_find) : null });
 
+// Tolerant JSON parse: models sometimes wrap output in ```json fences or add
+// prose. Strip fences, else grab the outermost {...}. Returns null on failure.
+function parseLooseJSON(s) {
+  if (!s) return null;
+  try { return JSON.parse(s); } catch {}
+  const fenced = s.replace(/^[\s\S]*?```(?:json)?\s*/i, "").replace(/```[\s\S]*$/, "");
+  try { return JSON.parse(fenced); } catch {}
+  const i = s.indexOf("{"), j = s.lastIndexOf("}");
+  if (i >= 0 && j > i) { try { return JSON.parse(s.slice(i, j + 1)); } catch {} }
+  return null;
+}
+
 // POST /v1/leads/extract { transcript } — the playbook-driven pipeline:
 // extract collect[] fields + summary + fact_find + outcome, score urgency, route
 // documents, save the lead, and report the planned auto-action.
@@ -325,8 +337,8 @@ async function extractRoute(req, env) {
     { role: "user", content: buildExtractionPrompt(pb, transcript, nowISO) },
   ], { jsonMode: true });
 
-  let lead;
-  try { lead = JSON.parse(content); } catch { return err(502, "extraction parse failed"); }
+  let lead = parseLooseJSON(content);
+  if (!lead) return err(502, "extraction parse failed");
   // Skip dead/no-audio calls.
   if (!lead.name && !lead.email && !lead.phone) return json(200, { skipped: true });
 
