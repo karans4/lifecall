@@ -103,8 +103,13 @@ async function verifySession(token, secret) {
     "HMAC", await hmacKey(secret), b64urlToBytes(sig), new TextEncoder().encode(body)
   );
   if (!ok) return null;
-  const [uid, exp] = body.split(".");
-  if (Number(exp) * 1000 < Date.now()) return null;
+  // The Apple user id (uid) itself contains periods, so split off the LAST
+  // segment as the expiry; everything before it is the uid.
+  const j = body.lastIndexOf(".");
+  if (j < 0) return null;
+  const uid = body.slice(0, j);
+  const exp = body.slice(j + 1);
+  if (!/^\d+$/.test(exp) || Number(exp) * 1000 < Date.now()) return null;
   return uid;
 }
 
@@ -181,6 +186,7 @@ export default {
       if (req.method === "POST" && path === "/v1/voice/token") return voiceTokenRoute(req, env);
       if (req.method === "POST" && path === "/v1/voice/clone") return voiceCloneRoute(req, env);
       if (req.method === "POST" && path === "/v1/calls/end") return callEndRoute(req, env);
+      if (req.method === "POST" && path === "/v1/consent") return consentRoute(req, env);
       if (req.method === "POST" && path === "/v1/dial") return dialRoute(req, env);
       if (req.method === "GET" && path === "/v1/billing/packs") return packsRoute();
       if (req.method === "POST" && path === "/v1/billing/checkout") return checkoutRoute(req, env);
@@ -493,6 +499,21 @@ async function voiceCloneRoute(req, env) {
     });
   }
   return json(200, { voice_id });
+}
+
+// POST /v1/consent { phone, source } — record consent to call a number (TCPA
+// audit trail). `source` documents HOW consent was obtained (e.g. "web opt-in
+// form", "inbound request", "verbal on prior call"). Owner-scoped.
+async function consentRoute(req, env) {
+  const uid = await requireUser(req, env);
+  if (!uid) return err(401, "unauthorized");
+  const { phone, source } = await req.json();
+  if (!phone) return err(400, "phone required");
+  await env.DB.prepare(
+    `INSERT INTO consents (owner, phone, granted_at, source) VALUES (?,?,?,?)
+     ON CONFLICT(owner, phone) DO UPDATE SET granted_at=excluded.granted_at, source=excluded.source`
+  ).bind(uid, phone, new Date().toISOString(), source || "manual").run();
+  return json(200, { phone, consented: true });
 }
 
 // POST /v1/dial { to } — consent-gated outbound. Requires a recorded consent row.
