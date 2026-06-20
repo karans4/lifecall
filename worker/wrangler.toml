@@ -5,7 +5,7 @@ compatibility_date = "2025-06-01"
 # Public-facing config (non-secret). Secrets are set via `wrangler secret put`.
 [vars]
 APPLE_BUNDLE_ID    = "ai.halo.lifecall"     # aud claim the Apple identity token must match
-OPENROUTER_MODEL   = "moonshotai/kimi-k2"    # open-weight; pinned to US hosts below
+OPENROUTER_MODEL   = "moonshotai/kimi-k2-0905"  # served by Groq (US, low-latency)
 OPENROUTER_PROVIDERS = "fireworks,together,baseten,groq"  # US inference hosts only
 OPENROUTER_REFERER = "https://lifecall.app"
 USER_MONTHLY_CAP   = "2000"                  # per-user request cap / month (429 when hit)
