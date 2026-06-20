@@ -1,12 +1,25 @@
 # LifeCall
 
-A voice-first AI life-insurance agent for iOS. Built for a multimodal AI agent
-hackathon (sponsors: **Vapi**, **Nebius**, **Insforge**).
+An **open-source voice AI agent pipeline** for iOS: voice in → structured outcome out.
+"Jordan" holds a real-time phone conversation — in-app (WebRTC) or a real outbound
+call — and the moment it ends the pipeline runs itself: it extracts a structured
+lead, saves it to a CRM, generates a personalized PDF, and sends a follow-up email.
 
-"Jordan," an AI closer, runs a real telesales qualification call — in-app live
-voice or a real outbound phone call — then the pipeline runs itself: it extracts
-a structured lead, saves it to a CRM, generates a personalized coverage proposal
-PDF, and emails it.
+The agent **introduces itself as an AI** on every call. The example vertical is
+insurance intake (it ships with a real qualification script), but the pipeline is
+use-case agnostic.
+
+Built with **ElevenLabs** (voice agent), **OpenRouter** (LLM), and a **Cloudflare
+Worker** backend (D1 + R2 + Resend). The iOS app holds **no provider keys** — it
+authenticates with Sign in with Apple and talks only to the Worker, which holds
+every secret server-side. Free tier runs fully on-device (iOS 26 FoundationModels).
+
+- **Self-host:** deploy the Worker (`worker/`) with your own keys, point the app at it.
+- **Hosted:** an optional managed version, priced only to cover the underlying
+  voice / LLM credits — no markup.
+
+> Calling people is regulated (e.g. TCPA in the US). Use outbound only with consent;
+> the agent discloses it's an AI. You are responsible for compliance when self-hosting.
 
 ## The flow
 
@@ -17,23 +30,26 @@ PDF, and emails it.
 2. **Call ends → it captures itself.** Nebius reads the transcript and extracts a
    structured lead (name, age, coverage, premium, email, phone, callback time) plus
    a conversation summary and full fact-find.
-3. **Lead saves to Insforge** and appears in the in-app pipeline + Schedule tab.
+3. **Lead saves to the Worker (Cloudflare D1)**, owner-scoped, and appears in the
+   in-app pipeline + Schedule tab.
 4. **Personalized PDF proposal** is generated on-device (PDFKit), uploaded to
-   Insforge storage, and emailed with the situation-appropriate documents.
+   private R2 storage via the Worker, and emailed with the right documents.
 
 ## Stack
 
-- **Vapi** — voice (in-app WebRTC SDK + outbound PSTN), built on Daily.
-- **Nebius** — the LLM (`meta-llama/Llama-3.3-70B-Instruct`) via Vapi `custom-llm`,
-  and app-side for lead extraction + email composition.
-- **Insforge** — Postgres `leads` table (REST), file storage, and transactional email.
-- **SwiftUI** — iOS 17, project generated with [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+- **ElevenLabs** — Conversational AI agent: in-app voice SDK + Twilio phone, STT +
+  premium TTS + turn-taking. Its LLM is the Worker's OpenRouter proxy.
+- **OpenRouter** — the LLM, reached only through the Worker (no key on device).
+- **Cloudflare Worker** (`worker/`) — the backend: Sign in with Apple verification,
+  D1 (leads), R2 (private PDFs), Resend (email), the LLM proxy, consent-gated dialing.
+- **iOS 26 on-device** — free tier: FoundationModels + SpeechAnalyzer + AVSpeech.
+- **SwiftUI** — iOS 17+, project generated with [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 
 ## Build
 
 ```sh
-# 1. Provide your keys
-cp Secrets.example.swift Sources/Secrets.swift   # then fill in your keys
+# 1. Deploy the backend and point the app at it
+#    (see worker/README.md), then set Config.workerBaseURL + elevenLabsAgentId.
 
 # 2. Generate the Xcode project
 xcodegen generate
@@ -43,12 +59,9 @@ xcodebuild -project LifeCall.xcodeproj -scheme LifeCall \
   -destination 'id=YOUR_DEVICE_ID' -allowProvisioningUpdates build
 ```
 
-You'll also need an Insforge project with a `leads` table (see
-`migrations/`) and a public `documents` storage bucket, plus a Vapi phone number
-configured in `Config.swift`.
-
 ## Notes
 
-- Real API keys live in `Sources/Secrets.swift`, which is gitignored. Never commit it.
-- Outbound calls to a stranger's cell are often carrier spam-filtered; demo with a
-  consenting number that's expecting the call, or use the in-app voice orb.
+- The app holds **no** provider keys — only a Sign in with Apple session token. All
+  secrets live in the Worker (Cloudflare secrets). See `worker/README.md`.
+- Outbound phone calls are consent-gated server-side (TCPA). The agent discloses
+  it's an AI on every call.

@@ -1,0 +1,36 @@
+name = "lifecall"
+main = "src/worker.js"
+compatibility_date = "2025-06-01"
+
+# Public-facing config (non-secret). Secrets are set via `wrangler secret put`.
+[vars]
+APPLE_BUNDLE_ID    = "ai.halo.lifecall"     # aud claim the Apple identity token must match
+OPENROUTER_MODEL   = "anthropic/claude-sonnet-4-6"
+OPENROUTER_REFERER = "https://lifecall.app"
+USER_MONTHLY_CAP   = "2000"                  # per-user request cap / month (429 when hit)
+GLOBAL_MONTHLY_CAP = "100000"                # global request cap / month (503 when hit)
+EMAIL_FROM         = "Jordan <jordan@lifecall.app>"
+
+# Per-user metering + session cache (eventually-consistent, fine for soft limits).
+[[kv_namespaces]]
+binding = "USAGE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# Relational store for leads (owner-scoped).
+[[d1_databases]]
+binding = "DB"
+database_name = "lifecall"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+# Private object storage for generated PDFs (served via signed/streamed worker routes).
+[[r2_buckets]]
+binding = "DOCS"
+bucket_name = "lifecall-documents"
+
+# Secrets (set with: npx wrangler secret put <NAME>)
+#   OPENROUTER_API_KEY   - OpenRouter inference key
+#   SESSION_SECRET       - 32+ byte HMAC key for minting session tokens
+#   RESEND_API_KEY       - Resend transactional email
+#   ELEVENLABS_API_KEY   - ElevenLabs (agent/TTS) — used server-side only
+#   TWILIO_ACCOUNT_SID   - Twilio (outbound phone), provisioning
+#   TWILIO_AUTH_TOKEN    - Twilio auth

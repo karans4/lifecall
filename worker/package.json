@@ -1,0 +1,13 @@
+{
+  "name": "lifecall-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute lifecall --file=schema.sql"
+  },
+  "devDependencies": {
+    "wrangler": "^3"
+  }
+}

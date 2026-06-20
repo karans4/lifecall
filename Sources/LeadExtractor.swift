@@ -1,6 +1,7 @@
 import Foundation
 
-/// Uses Nebius (Llama-3.3-70B) to pull a structured lead out of a call transcript.
+/// Pulls a structured lead out of a call transcript. The LLM (OpenRouter) is
+/// reached through the LifeCall Worker — no inference key on the device.
 enum LeadExtractor {
     static func extract(from transcript: String) async throws -> Lead {
         let nowISO = ISO8601DateFormatter().string(from: Date())
@@ -25,23 +26,7 @@ enum LeadExtractor {
         \(transcript)
         """
 
-        var req = URLRequest(url: URL(string: "\(Config.nebiusBaseURL)/chat/completions")!)
-        req.httpMethod = "POST"
-        req.setValue("Bearer \(Config.nebiusKey)", forHTTPHeaderField: "Authorization")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = [
-            "model": Config.nebiusModel,
-            "messages": [["role": "user", "content": prompt]],
-            "temperature": 0.1,
-            "response_format": ["type": "json_object"]
-        ]
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, _) = try await URLSession.shared.data(for: req)
-        // Dig the model's content string out of the OpenAI-shaped response.
-        let root = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        let content = ((root?["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any])?["content"] as? String ?? "{}"
-
+        let content = try await WorkerAPI.chat(user: prompt, jsonMode: true, temperature: 0.1)
         var lead = (try? JSONDecoder().decode(Lead.self, from: Data(content.utf8))) ?? Lead()
         lead.transcript = transcript
         return lead

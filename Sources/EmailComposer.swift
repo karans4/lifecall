@@ -37,19 +37,7 @@ enum EmailComposer {
         \(transcript)
         """
 
-        var req = URLRequest(url: URL(string: "\(Config.nebiusBaseURL)/chat/completions")!)
-        req.httpMethod = "POST"
-        req.setValue("Bearer \(Config.nebiusKey)", forHTTPHeaderField: "Authorization")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": Config.nebiusModel,
-            "messages": [["role": "user", "content": prompt]],
-            "temperature": 0.2,
-            "response_format": ["type": "json_object"]
-        ])
-        let (data, _) = try await URLSession.shared.data(for: req)
-        let root = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        let content = ((root?["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any])?["content"] as? String ?? "{}"
+        let content = try await WorkerAPI.chat(user: prompt, jsonMode: true, temperature: 0.2)
         let j = (try? JSONSerialization.jsonObject(with: Data(content.utf8))) as? [String: Any] ?? [:]
 
         return Plan(
@@ -67,14 +55,13 @@ enum EmailComposer {
         let plan = try await self.plan(lead: lead, transcript: transcript)
         let docs = plan.documentIds.compactMap { DocumentCatalog.find($0) }
 
-        // Generate + upload the personalized proposal PDF (best-effort).
-        var proposalURL: String?
+        // Generate + upload the personalized proposal PDF to private storage
+        // (best-effort). The returned URL is owner-scoped and served by the Worker.
         let pdf = PDFGenerator.coverageProposal(for: lead)
-        let key = "leads/\(UUID().uuidString)/coverage-proposal.pdf"
-        proposalURL = try? await StorageService.upload(pdf, key: key, contentType: "application/pdf")
+        let proposalURL = try? await WorkerAPI.uploadDocument(pdf)
 
         let html = renderHTML(lead: lead, plan: plan, docs: docs, proposalURL: proposalURL)
-        try await EmailService.send(to: address, subject: plan.subject, html: html)
+        try await WorkerAPI.sendEmail(to: address, subject: plan.subject, html: html)
         return plan
     }
 

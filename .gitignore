@@ -2,6 +2,7 @@
 Sources/Secrets.swift
 .env.local
 CONTEXT.md
+SECURITY_REVIEW.md
 
 # Xcode / build
 build/

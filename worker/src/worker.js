@@ -1,0 +1,306 @@
+// LifeCall edge worker — the backend that holds all keys. Adapted from halo's
+// edge-worker patterns. Responsibilities:
+//   - Verify Sign in with Apple (identity JWT) and mint our own session token
+//   - Owner-scoped leads in D1 (no client ever sees another agent's data)
+//   - Private PDF storage in R2, served only to the owner
+//   - OpenRouter custom-LLM proxy (the endpoint ElevenLabs' agent calls)
+//   - Transactional email via Resend
+//   - Consent-gated outbound dialing (TCPA)
+//
+// Keys live only here as Wrangler secrets — never in the client.
+
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS",
+  "Access-Control-Allow-Headers": "authorization,content-type,x-lifecall-session,x-lifecall-user",
+};
+
+const json = (status, body) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...CORS } });
+const err = (status, msg) => json(status, { error: msg });
+
+function safeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let out = 0;
+  for (let i = 0; i < a.length; i++) out |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return out === 0;
+}
+
+// ---- base64url -------------------------------------------------------------
+const b64urlToBytes = (s) => {
+  s = s.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = s.length % 4 ? "=".repeat(4 - (s.length % 4)) : "";
+  const bin = atob(s + pad);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+};
+const bytesToB64url = (bytes) => {
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+
+// ---- Sign in with Apple verification --------------------------------------
+let _jwks = null, _jwksAt = 0;
+async function appleKeys() {
+  const now = Date.now();
+  if (_jwks && now - _jwksAt < 3600_000) return _jwks; // cache 1h
+  const res = await fetch("https://appleid.apple.com/auth/keys");
+  _jwks = (await res.json()).keys;
+  _jwksAt = now;
+  return _jwks;
+}
+
+/// Verify an Apple identity token. Returns { sub, email } or throws.
+async function verifyApple(idToken, bundleId) {
+  const [h, p, s] = idToken.split(".");
+  if (!h || !p || !s) throw new Error("malformed token");
+  const header = JSON.parse(new TextDecoder().decode(b64urlToBytes(h)));
+  const payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(p)));
+
+  const jwk = (await appleKeys()).find((k) => k.kid === header.kid);
+  if (!jwk) throw new Error("unknown key id");
+
+  const key = await crypto.subtle.importKey(
+    "jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]
+  );
+  const ok = await crypto.subtle.verify(
+    "RSASSA-PKCS1-v1_5", key, b64urlToBytes(s),
+    new TextEncoder().encode(`${h}.${p}`)
+  );
+  if (!ok) throw new Error("bad signature");
+
+  if (payload.iss !== "https://appleid.apple.com") throw new Error("bad issuer");
+  if (payload.aud !== bundleId) throw new Error("bad audience");
+  if (payload.exp * 1000 < Date.now()) throw new Error("expired");
+  return { sub: payload.sub, email: payload.email };
+}
+
+// ---- our session tokens (HMAC) --------------------------------------------
+async function hmacKey(secret) {
+  return crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]
+  );
+}
+async function mintSession(uid, secret, ttlSec = 60 * 60 * 24 * 30) {
+  const exp = Math.floor(Date.now() / 1000) + ttlSec;
+  const body = `${uid}.${exp}`;
+  const sig = await crypto.subtle.sign("HMAC", await hmacKey(secret), new TextEncoder().encode(body));
+  return { token: `${body}.${bytesToB64url(new Uint8Array(sig))}`, expiresIn: ttlSec };
+}
+async function verifySession(token, secret) {
+  if (!token) return null;
+  const i = token.lastIndexOf(".");
+  if (i < 0) return null;
+  const body = token.slice(0, i);
+  const sig = token.slice(i + 1);
+  const ok = await crypto.subtle.verify(
+    "HMAC", await hmacKey(secret), b64urlToBytes(sig), new TextEncoder().encode(body)
+  );
+  if (!ok) return null;
+  const [uid, exp] = body.split(".");
+  if (Number(exp) * 1000 < Date.now()) return null;
+  return uid;
+}
+
+async function requireUser(req, env) {
+  const uid = await verifySession(req.headers.get("x-lifecall-session"), env.SESSION_SECRET);
+  return uid; // null if missing/invalid
+}
+
+// ---- per-user metering -----------------------------------------------------
+async function meter(env, uid) {
+  if (!env.USAGE) return null;
+  const month = new Date().toISOString().slice(0, 7);
+  const gKey = `global:${month}`, uKey = `user:${uid}:${month}`;
+  const [g, u] = await Promise.all([env.USAGE.get(gKey), env.USAGE.get(uKey)]);
+  const gc = Number(g) || 0, uc = Number(u) || 0;
+  if (Number(env.GLOBAL_MONTHLY_CAP) && gc >= Number(env.GLOBAL_MONTHLY_CAP))
+    return err(503, "LifeCall is at capacity this month.");
+  if (Number(env.USER_MONTHLY_CAP) && uc >= Number(env.USER_MONTHLY_CAP))
+    return err(429, "You've hit this month's limit.");
+  const ttl = 60 * 60 * 24 * 35;
+  await Promise.all([
+    env.USAGE.put(gKey, String(gc + 1), { expirationTtl: ttl }),
+    env.USAGE.put(uKey, String(uc + 1), { expirationTtl: ttl }),
+  ]);
+  return null;
+}
+
+// ---- routes ----------------------------------------------------------------
+export default {
+  async fetch(req, env) {
+    if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
+    const url = new URL(req.url);
+    const path = url.pathname;
+    try {
+      if (req.method === "POST" && path === "/v1/auth") return authRoute(req, env);
+      if (req.method === "POST" && path === "/v1/chat/completions") return chatRoute(req, env);
+      if (path === "/v1/leads") return leadsRoute(req, env);
+      if (req.method === "POST" && path === "/v1/documents") return uploadDoc(req, env);
+      if (req.method === "GET" && path.startsWith("/v1/documents/")) return serveDoc(req, env, path);
+      if (req.method === "POST" && path === "/v1/email") return emailRoute(req, env);
+      if (req.method === "POST" && path === "/v1/voice/token") return voiceTokenRoute(req, env);
+      if (req.method === "POST" && path === "/v1/dial") return dialRoute(req, env);
+      return err(404, "not found");
+    } catch (e) {
+      return err(500, String(e?.message || e));
+    }
+  },
+};
+
+// POST /v1/auth { identityToken } -> { session, expiresIn, userId }
+async function authRoute(req, env) {
+  const { identityToken } = await req.json();
+  if (!identityToken) return err(400, "identityToken required");
+  const { sub } = await verifyApple(identityToken, env.APPLE_BUNDLE_ID);
+  const { token, expiresIn } = await mintSession(sub, env.SESSION_SECRET);
+  return json(200, { session: token, expiresIn, userId: sub });
+}
+
+// POST /v1/chat/completions — OpenRouter proxy. Auth via user session OR the
+// ElevenLabs custom-LLM bearer (CUSTOM_LLM_TOKEN). OpenAI-compatible passthrough.
+async function chatRoute(req, env) {
+  let uid = await requireUser(req, env);
+  if (!uid) {
+    const m = /^Bearer\s+(.+)$/i.exec(req.headers.get("authorization") || "");
+    if (m && env.CUSTOM_LLM_TOKEN && safeEqual(m[1], env.CUSTOM_LLM_TOKEN)) {
+      uid = req.headers.get("x-lifecall-user") || "agent";
+    }
+  }
+  if (!uid) return err(401, "unauthorized");
+  const limited = await meter(env, uid);
+  if (limited) return limited;
+  if (!env.OPENROUTER_API_KEY) return err(503, "LLM not configured");
+
+  const body = await req.json();
+  if (!body.model || body.model === "default") body.model = env.OPENROUTER_MODEL;
+  const upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+      "HTTP-Referer": env.OPENROUTER_REFERER || "",
+      "X-Title": "LifeCall",
+    },
+    body: JSON.stringify(body),
+  });
+  return new Response(upstream.body, {
+    status: upstream.status,
+    headers: { "content-type": upstream.headers.get("content-type") || "application/json", ...CORS },
+  });
+}
+
+// GET /v1/leads -> owner's leads ; POST /v1/leads { lead } -> upsert
+async function leadsRoute(req, env) {
+  const uid = await requireUser(req, env);
+  if (!uid) return err(401, "unauthorized");
+
+  if (req.method === "GET") {
+    const { results } = await env.DB.prepare(
+      "SELECT * FROM leads WHERE owner = ? ORDER BY created_at DESC LIMIT 50"
+    ).bind(uid).all();
+    return json(200, results.map(rowToLead));
+  }
+  if (req.method === "POST") {
+    const l = await req.json();
+    const id = l.id || crypto.randomUUID();
+    const createdAt = l.created_at || new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO leads (id,owner,name,age,coverage_type,coverage_amount,monthly_budget,outcome,
+        email,phone,callback_at,callback_status,transcript,summary,fact_find,created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET name=excluded.name, age=excluded.age,
+        coverage_type=excluded.coverage_type, coverage_amount=excluded.coverage_amount,
+        monthly_budget=excluded.monthly_budget, outcome=excluded.outcome, email=excluded.email,
+        phone=excluded.phone, callback_at=excluded.callback_at, transcript=excluded.transcript,
+        summary=excluded.summary, fact_find=excluded.fact_find`
+    ).bind(
+      id, uid, l.name ?? null, l.age ?? null, l.coverage_type ?? null, l.coverage_amount ?? null,
+      l.monthly_budget ?? null, l.outcome ?? null, l.email ?? null, l.phone ?? null,
+      l.callback_at ?? null, l.callback_status ?? "pending", l.transcript ?? null,
+      l.summary ?? null, l.fact_find ? JSON.stringify(l.fact_find) : null, createdAt
+    ).run();
+    return json(200, { id });
+  }
+  return err(405, "method not allowed");
+}
+
+const rowToLead = (r) => ({ ...r, fact_find: r.fact_find ? JSON.parse(r.fact_find) : null });
+
+// POST /v1/documents (multipart 'file', ?key=) -> { url } (owner-scoped private)
+async function uploadDoc(req, env) {
+  const uid = await requireUser(req, env);
+  if (!uid) return err(401, "unauthorized");
+  const form = await req.formData();
+  const file = form.get("file");
+  if (!file) return err(400, "file required");
+  const id = crypto.randomUUID();
+  const objectKey = `${uid}/${id}.pdf`; // namespaced by owner — not guessable across users
+  await env.DOCS.put(objectKey, file.stream(), {
+    httpMetadata: { contentType: "application/pdf" },
+  });
+  // Return a URL to OUR route, which checks ownership before serving.
+  return json(200, { url: `${new URL(req.url).origin}/v1/documents/${id}`, id });
+}
+
+// GET /v1/documents/:id — serve only to the owner (session required).
+async function serveDoc(req, env, path) {
+  const uid = await requireUser(req, env);
+  if (!uid) return err(401, "unauthorized");
+  const id = path.split("/").pop();
+  const obj = await env.DOCS.get(`${uid}/${id}.pdf`);
+  if (!obj) return err(404, "not found");
+  return new Response(obj.body, {
+    headers: { "content-type": "application/pdf", "cache-control": "private, no-store", ...CORS },
+  });
+}
+
+// POST /v1/email { to, subject, html } — via Resend, session-gated.
+async function emailRoute(req, env) {
+  const uid = await requireUser(req, env);
+  if (!uid) return err(401, "unauthorized");
+  if (!env.RESEND_API_KEY) return err(503, "email not configured");
+  const { to, subject, html } = await req.json();
+  if (!to || !subject || !html) return err(400, "to, subject, html required");
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, "content-type": "application/json" },
+    body: JSON.stringify({ from: env.EMAIL_FROM, to, subject, html }),
+  });
+  if (!res.ok) return err(502, `email send failed: ${res.status}`);
+  return json(200, { sent: true });
+}
+
+// POST /v1/voice/token { agentId } — mint an ElevenLabs conversation token for a
+// private agent, server-side (the ElevenLabs key never reaches the device).
+async function voiceTokenRoute(req, env) {
+  const uid = await requireUser(req, env);
+  if (!uid) return err(401, "unauthorized");
+  if (!env.ELEVENLABS_API_KEY) return err(503, "voice not configured");
+  const { agentId } = await req.json();
+  if (!agentId) return err(400, "agentId required");
+  const res = await fetch(
+    `https://api.elevenlabs.io/v1/convai/conversation/token?agent_id=${encodeURIComponent(agentId)}`,
+    { headers: { "xi-api-key": env.ELEVENLABS_API_KEY } }
+  );
+  if (!res.ok) return err(502, `token mint failed: ${res.status}`);
+  const data = await res.json();
+  return json(200, { token: data.token });
+}
+
+// POST /v1/dial { to } — consent-gated outbound. Requires a recorded consent row.
+// Actual call placement (Twilio + ElevenLabs agent) is wired in the next phase.
+async function dialRoute(req, env) {
+  const uid = await requireUser(req, env);
+  if (!uid) return err(401, "unauthorized");
+  const { to } = await req.json();
+  if (!to) return err(400, "to required");
+  const row = await env.DB.prepare(
+    "SELECT phone FROM consents WHERE owner = ? AND phone = ?"
+  ).bind(uid, to).first();
+  if (!row) return err(403, "no consent on file for this number");
+  // TODO(phase 2): trigger ElevenLabs agent outbound call via Twilio.
+  return json(501, { error: "dialing not yet wired", consent: "ok" });
+}

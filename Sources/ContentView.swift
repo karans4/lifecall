@@ -1,30 +1,26 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
-    @StateObject private var vapi = VapiManager()
+    @StateObject private var voice = VoiceManager()
     @State private var dialNumber = "+1"
     @State private var dialStatus = ""
     @State private var isDialing = false
     @State private var pulse = false
     @State private var selectedLead: Lead?
-    @Environment(\.scenePhase) private var scenePhase
 
-    private var isLive: Bool { vapi.state == .active }
+    private var isLive: Bool { voice.state == .active }
 
     var body: some View {
         TabView {
             homeTab
                 .tabItem { Label("Home", systemImage: "phone.fill") }
-            ScheduleView(leads: vapi.leads, onSelect: { selectedLead = $0 })
+            ScheduleView(leads: voice.leads, onSelect: { selectedLead = $0 })
                 .tabItem { Label("Schedule", systemImage: "calendar") }
         }
         .tint(.cyan)
         .preferredColorScheme(.dark)
-        .onAppear { vapi.refreshLeads(); vapi.reconcilePending() }
-        .onChange(of: scenePhase) { phase in
-            // Returning to the app: capture any outbound calls that finished while away.
-            if phase == .active { vapi.reconcilePending() }
-        }
+        .onAppear { voice.refreshLeads() }
         .sheet(item: $selectedLead) { lead in
             LeadDetailView(lead: lead)
         }
@@ -44,7 +40,7 @@ struct ContentView: View {
                 VStack(spacing: 32) {
                     header
                     callOrb
-                    if !vapi.transcript.isEmpty { transcriptCard }
+                    if !voice.transcript.isEmpty { transcriptCard }
                     outboundCard
                     leadsCard
                 }
@@ -52,7 +48,14 @@ struct ContentView: View {
                 .padding(.top, 24)
                 .padding(.bottom, 40)
             }
+            .scrollDismissesKeyboard(.interactively)
+            // Tap anywhere that isn't the text field / a control dismisses the keyboard.
+            .simultaneousGesture(TapGesture().onEnded { hideKeyboard() })
         }
+    }
+
+    private func hideKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
     // MARK: - Header
@@ -106,7 +109,7 @@ struct ContentView: View {
     }
 
     private var orbLabel: String {
-        switch vapi.state {
+        switch voice.state {
         case .idle, .ended: return "Start"
         case .connecting:   return "Connecting"
         case .active:       return "End"
@@ -120,7 +123,7 @@ struct ContentView: View {
             Label("Live transcript", systemImage: "text.bubble.fill")
                 .font(.subheadline.bold())
                 .foregroundStyle(.cyan)
-            ForEach(vapi.transcript) { line in
+            ForEach(voice.transcript) { line in
                 HStack(alignment: .top, spacing: 8) {
                     Text(line.role == "user" ? "🧑" : "🤖")
                     Text(line.text)
@@ -181,7 +184,7 @@ struct ContentView: View {
         .background(card)
     }
 
-    // MARK: - Leads (from Insforge)
+    // MARK: - Leads
 
     private var leadsCard: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -190,23 +193,23 @@ struct ContentView: View {
                     .font(.subheadline.bold())
                     .foregroundStyle(.purple)
                 Spacer()
-                if vapi.savingLead {
+                if voice.savingLead {
                     HStack(spacing: 6) {
                         ProgressView().tint(.purple).scaleEffect(0.8)
                         Text("Saving…").font(.caption).foregroundStyle(.white.opacity(0.5))
                     }
                 } else {
-                    Button { vapi.refreshLeads() } label: {
+                    Button { voice.refreshLeads() } label: {
                         Image(systemName: "arrow.clockwise").foregroundStyle(.white.opacity(0.6))
                     }
                 }
             }
 
-            Button(action: { vapi.runDueCallbacks() }) {
+            Button(action: { voice.runDueCallbacks() }) {
                 HStack {
-                    if vapi.runningCallbacks { ProgressView().tint(.white) }
+                    if voice.runningCallbacks { ProgressView().tint(.white) }
                     Image(systemName: "phone.badge.waveform.fill")
-                    Text(vapi.runningCallbacks ? "Dialing due callbacks…" : "Run due callbacks")
+                    Text(voice.runningCallbacks ? "Dialing due callbacks…" : "Run due callbacks")
                         .fontWeight(.semibold)
                 }
                 .frame(maxWidth: .infinity)
@@ -215,17 +218,17 @@ struct ContentView: View {
                 .foregroundStyle(.white)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
             }
-            .disabled(vapi.runningCallbacks)
-            if !vapi.callbackResult.isEmpty {
-                Text(vapi.callbackResult).font(.caption).foregroundStyle(.white.opacity(0.6))
+            .disabled(voice.runningCallbacks)
+            if !voice.callbackResult.isEmpty {
+                Text(voice.callbackResult).font(.caption).foregroundStyle(.white.opacity(0.6))
             }
 
-            if vapi.leads.isEmpty {
+            if voice.leads.isEmpty {
                 Text("Leads land here after each call — auto-extracted from the conversation.")
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.4))
             } else {
-                ForEach(vapi.leads) { lead in
+                ForEach(voice.leads) { lead in
                     Button { selectedLead = lead } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
@@ -284,7 +287,7 @@ struct ContentView: View {
     }
 
     private func toggleCall() {
-        isLive ? vapi.stop() : vapi.start()
+        isLive ? voice.stop() : voice.start()
     }
 
     private func dial() {
@@ -302,17 +305,15 @@ struct ContentView: View {
             var failed = 0
             for number in numbers {
                 do {
-                    let callId = try await OutboundService.dial(toNumber: number)
+                    try await voice.dial(to: number)   // Worker enforces consent (TCPA)
                     placed += 1
-                    // Captured when the call ends and the app is next foregrounded.
-                    vapi.enqueueOutbound(callId: callId)
                 } catch {
                     failed += 1
                 }
             }
             dialStatus = failed == 0
-                ? "Placed \(placed) call\(placed == 1 ? "" : "s") ✓ — lead will land when it ends"
-                : "Placed \(placed) ✓  ·  \(failed) failed"
+                ? "Placed \(placed) call\(placed == 1 ? "" : "s") ✓ — lead lands when it ends"
+                : "Placed \(placed) ✓  ·  \(failed) failed (need consent on file)"
             isDialing = false
         }
     }
