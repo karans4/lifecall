@@ -657,9 +657,18 @@ async function stripeWebhookRoute(req, env) {
     { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
   );
   const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${parts.t}.${raw}`));
-  if (bytesToHex(mac) !== parts.v1) return err(400, "bad signature");
+  if (!safeEqual(bytesToHex(mac), parts.v1 || "")) return err(400, "bad signature");
 
   const event = JSON.parse(raw);
+
+  // Idempotency: Stripe delivers at-least-once, so skip events we've already
+  // applied (otherwise a redelivery double-credits the account).
+  if (env.USAGE && event.id) {
+    const seen = await env.USAGE.get(`stripe_evt:${event.id}`);
+    if (seen) return json(200, { received: true, duplicate: true });
+    await env.USAGE.put(`stripe_evt:${event.id}`, "1", { expirationTtl: 60 * 60 * 24 * 30 });
+  }
+
   if (event.type === "checkout.session.completed") {
     const obj = event.data.object;
     const uid = obj.metadata?.apple_sub || obj.client_reference_id;
