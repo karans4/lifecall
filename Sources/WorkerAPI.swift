@@ -114,6 +114,39 @@ enum WorkerAPI {
         return token
     }
 
+    // MARK: Voice cloning (consented self-clone)
+
+    /// Upload the signed-in user's own voice sample to create an instant clone and
+    /// set it as their agent's voice. `attest` MUST be the user's confirmation that
+    /// the recording is their own voice. Returns the new voice_id.
+    static func cloneVoice(_ audio: Data, agentId: String) async throws -> String {
+        var req = URLRequest(url: URL(string: "\(Config.workerBaseURL)/v1/voice/clone")!)
+        req.httpMethod = "POST"
+        if let s = session { req.setValue(s, forHTTPHeaderField: "X-LifeCall-Session") }
+        let boundary = "lifecall-\(UUID().uuidString)"
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        var body = Data()
+        func field(_ name: String, _ value: String) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".data(using: .utf8)!)
+        }
+        field("attest", "true")
+        field("agentId", agentId)
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"sample.m4a\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: audio/m4a\r\n\r\n".data(using: .utf8)!)
+        body.append(audio)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        req.httpBody = body
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw APIError(status: (resp as? HTTPURLResponse)?.statusCode ?? -1,
+                           body: String(data: data, encoding: .utf8) ?? "")
+        }
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return obj?["voice_id"] as? String ?? ""
+    }
+
     // MARK: Outbound dial (consent-gated server-side)
 
     static func dial(to number: String) async throws {

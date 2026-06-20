@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var isDialing = false
     @State private var pulse = false
     @State private var selectedLead: Lead?
+    @State private var showVoiceClone = false
 
     private var isLive: Bool { voice.state == .active }
 
@@ -104,6 +105,13 @@ struct ContentView: View {
             Text(isLive ? "Tap to end • talk anytime, you can interrupt" : "Tap to talk to Jordan")
                 .font(.footnote)
                 .foregroundStyle(.white.opacity(0.5))
+
+            Button { showVoiceClone = true } label: {
+                Label("Use my voice", systemImage: "waveform.badge.mic")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.cyan)
+            }
+            .sheet(isPresented: $showVoiceClone) { VoiceCloneView() }
         }
         .padding(.vertical, 8)
     }

@@ -179,6 +179,7 @@ export default {
       if (req.method === "GET" && path.startsWith("/v1/documents/")) return serveDoc(req, env, path);
       if (req.method === "POST" && path === "/v1/email") return emailRoute(req, env);
       if (req.method === "POST" && path === "/v1/voice/token") return voiceTokenRoute(req, env);
+      if (req.method === "POST" && path === "/v1/voice/clone") return voiceCloneRoute(req, env);
       if (req.method === "POST" && path === "/v1/dial") return dialRoute(req, env);
       return err(404, "not found");
     } catch (e) {
@@ -420,6 +421,50 @@ async function voiceTokenRoute(req, env) {
   if (!res.ok) return err(502, `token mint failed: ${res.status}`);
   const data = await res.json();
   return json(200, { token: data.token });
+}
+
+// POST /v1/voice/clone (multipart: file=audio, attest="true", agentId) — consented
+// SELF-clone only. Creates an ElevenLabs instant voice clone from the signed-in
+// user's own recording and sets it as their agent's voice. The `attest` flag is the
+// user's confirmation that it's their own voice (ToS + consent requirement).
+async function voiceCloneRoute(req, env) {
+  const uid = await requireUser(req, env);
+  if (!uid) return err(401, "unauthorized");
+  if (!env.ELEVENLABS_API_KEY) return err(503, "voice not configured");
+
+  const form = await req.formData();
+  const file = form.get("file");
+  const attest = form.get("attest");
+  const agentId = form.get("agentId");
+  if (!file) return err(400, "audio file required");
+  if (attest !== "true") return err(403, "consent attestation required (own voice only)");
+
+  // Create the instant voice clone.
+  const elForm = new FormData();
+  elForm.append("name", `lifecall-${uid.slice(0, 12)}`);
+  elForm.append("files", file, "sample.m4a");
+  elForm.append("remove_background_noise", "true");
+  const cloneRes = await fetch("https://api.elevenlabs.io/v1/voices/add", {
+    method: "POST",
+    headers: { "xi-api-key": env.ELEVENLABS_API_KEY },
+    body: elForm,
+  });
+  if (!cloneRes.ok) return err(502, `clone failed: ${cloneRes.status} ${await cloneRes.text()}`);
+  const { voice_id } = await cloneRes.json();
+
+  // Remember the user's voice.
+  if (env.USAGE) await env.USAGE.put(`voice:${uid}`, voice_id);
+
+  // Point the agent at the cloned voice (single-rep model; per-user override is a
+  // follow-up). agentId comes from the client config.
+  if (agentId) {
+    await fetch(`https://api.elevenlabs.io/v1/convai/agents/${agentId}`, {
+      method: "PATCH",
+      headers: { "xi-api-key": env.ELEVENLABS_API_KEY, "content-type": "application/json" },
+      body: JSON.stringify({ conversation_config: { tts: { voice_id } } }),
+    });
+  }
+  return json(200, { voice_id });
 }
 
 // POST /v1/dial { to } — consent-gated outbound. Requires a recorded consent row.
