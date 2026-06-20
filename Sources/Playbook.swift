@@ -23,8 +23,11 @@ struct Playbook: Codable, Identifiable {
     var autoActionsEnabled: Bool
 
     /// The full system prompt handed to the LLM, generated from the playbook.
+    /// Fields are ordered by collection urgency so the agent chases the must-gets first.
     var systemPrompt: String {
-        let fields = collect.map { "- \($0.key): \($0.prompt)\($0.required ? " (required)" : "")" }
+        let fields = collect
+            .sorted { $0.priority.rank < $1.priority.rank }
+            .map { "- \($0.key): \($0.prompt) — \($0.priority.instruction)" }
             .joined(separator: "\n")
         return """
         \(personaAndFlow)
@@ -45,9 +48,32 @@ struct Playbook: Codable, Identifiable {
 /// A field the agent should collect, and how it maps into the lead record.
 struct CollectField: Codable, Identifiable {
     var id: String { key }
-    var key: String          // e.g. "monthly_budget"
-    var prompt: String       // instruction for the agent + extractor
-    var required: Bool
+    var key: String              // e.g. "monthly_budget"
+    var prompt: String           // instruction for the agent + extractor
+    var priority: CollectPriority
+
+    /// A critical field that's missing flags the call as incomplete.
+    var required: Bool { priority == .critical }
+}
+
+/// How hard the agent should push to collect a field, and how the pipeline treats
+/// it if it's missing after the call.
+enum CollectPriority: String, Codable, CaseIterable {
+    case critical    // must land it; don't end the call without it
+    case high        // chase it; only skip if they clearly won't say
+    case normal      // get it if it fits naturally
+    case optional    // bonus
+
+    var rank: Int { [.critical, .high, .normal, .optional].firstIndex(of: self) ?? 9 }
+
+    var instruction: String {
+        switch self {
+        case .critical: return "MUST get this — don't wrap the call without it"
+        case .high:     return "important, chase it"
+        case .normal:   return "get it if it comes up naturally"
+        case .optional: return "nice to have"
+        }
+    }
 }
 
 /// Urgency tier with the action it triggers. `autoDial`/`autoBook` only fire when
@@ -99,14 +125,14 @@ extension Playbook {
             + "everything I set up. You got a quick minute?",
         personaAndFlow: IntakeScript.systemPrompt,
         collect: [
-            .init(key: "name", prompt: "their full name", required: true),
-            .init(key: "age", prompt: "their age / date of birth", required: true),
-            .init(key: "coverage_type", prompt: "product fit: term/whole/UL/IUL/final expense", required: false),
-            .init(key: "coverage_amount", prompt: "desired face amount", required: false),
-            .init(key: "monthly_budget", prompt: "the final agreed monthly premium", required: false),
-            .init(key: "email", prompt: "best email for paperwork (read it back)", required: true),
-            .init(key: "phone", prompt: "best callback number in E.164", required: true),
-            .init(key: "callback_at", prompt: "a concrete follow-up time", required: false),
+            .init(key: "name", prompt: "their full name", priority: .critical),
+            .init(key: "email", prompt: "best email for paperwork (read it back)", priority: .critical),
+            .init(key: "phone", prompt: "best callback number in E.164", priority: .critical),
+            .init(key: "age", prompt: "their age / date of birth", priority: .high),
+            .init(key: "monthly_budget", prompt: "the final agreed monthly premium", priority: .high),
+            .init(key: "callback_at", prompt: "a concrete follow-up time", priority: .high),
+            .init(key: "coverage_amount", prompt: "desired face amount", priority: .normal),
+            .init(key: "coverage_type", prompt: "product fit: term/whole/UL/IUL/final expense", priority: .normal),
         ],
         urgencyTiers: [
             .init(name: "Hot", criteria: "agreed to a premium and gave payment intent or said yes to applying",
