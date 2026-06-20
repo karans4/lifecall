@@ -15,18 +15,19 @@ EMAIL_FROM         = "Jordan <jordan@lifecall.app>"
 # Per-user metering + session cache (eventually-consistent, fine for soft limits).
 [[kv_namespaces]]
 binding = "USAGE"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "73e71d6af2774326a561dfe2ae8078d6"
 
 # Relational store for leads (owner-scoped).
 [[d1_databases]]
 binding = "DB"
 database_name = "lifecall"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "e0348236-8072-4a5c-9ee6-7cd2c93e6e60"
 
-# Private object storage for generated PDFs (served via signed/streamed worker routes).
-[[r2_buckets]]
-binding = "DOCS"
-bucket_name = "lifecall-documents"
+# Private object storage for generated PDFs. ENABLE R2 in the Cloudflare dashboard,
+# then run `wrangler r2 bucket create lifecall-documents` and uncomment this.
+# [[r2_buckets]]
+# binding = "DOCS"
+# bucket_name = "lifecall-documents"
 
 # Secrets (set with: npx wrangler secret put <NAME>)
 #   OPENROUTER_API_KEY   - OpenRouter inference key

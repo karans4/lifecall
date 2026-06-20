@@ -6,7 +6,7 @@ import Foundation
 /// public: where the Worker lives and which ElevenLabs agent to talk to.
 enum Config {
     /// The Cloudflare Worker base URL (see worker/). Override per environment.
-    static let workerBaseURL = "https://lifecall.<your-account>.workers.dev"
+    static let workerBaseURL = "https://lifecall.karans4.workers.dev"
 
     /// ElevenLabs Conversational AI agent id (not a secret; the signed URL that
     /// authorizes a session is fetched from the Worker).
