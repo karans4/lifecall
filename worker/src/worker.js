@@ -180,7 +180,9 @@ export default {
       if (req.method === "POST" && path === "/v1/email") return emailRoute(req, env);
       if (req.method === "POST" && path === "/v1/voice/token") return voiceTokenRoute(req, env);
       if (req.method === "POST" && path === "/v1/voice/clone") return voiceCloneRoute(req, env);
+      if (req.method === "POST" && path === "/v1/calls/end") return callEndRoute(req, env);
       if (req.method === "POST" && path === "/v1/dial") return dialRoute(req, env);
+      if (req.method === "GET" && path === "/v1/billing/packs") return packsRoute();
       if (req.method === "POST" && path === "/v1/billing/checkout") return checkoutRoute(req, env);
       if (req.method === "GET" && path === "/v1/billing/status") return billingStatusRoute(req, env);
       if (req.method === "POST" && path === "/v1/stripe/webhook") return stripeWebhookRoute(req, env);
@@ -418,6 +420,12 @@ async function voiceTokenRoute(req, env) {
   if (!env.ELEVENLABS_API_KEY) return err(503, "voice not configured");
   const { agentId } = await req.json();
   if (!agentId) return err(400, "agentId required");
+
+  // Gate on balance — need at least a minute of call time. Actual seconds are
+  // debited on call end (/v1/calls/end). No charge if balance is too low.
+  const row = await env.DB.prepare("SELECT credit_seconds FROM subscriptions WHERE owner = ?").bind(uid).first();
+  if ((row?.credit_seconds || 0) < MIN_START_SECONDS) return err(402, "out of call time — buy more hours");
+
   const res = await fetch(
     `https://api.elevenlabs.io/v1/convai/conversation/token?agent_id=${encodeURIComponent(agentId)}`,
     { headers: { "xi-api-key": env.ELEVENLABS_API_KEY } }
@@ -425,6 +433,22 @@ async function voiceTokenRoute(req, env) {
   if (!res.ok) return err(502, `token mint failed: ${res.status}`);
   const data = await res.json();
   return json(200, { token: data.token });
+}
+
+// POST /v1/calls/end { seconds } — debit talk time when a call ends. (Client-
+// reported for now; can be made ElevenLabs-authoritative via the conversation API.)
+async function callEndRoute(req, env) {
+  const uid = await requireUser(req, env);
+  if (!uid) return err(401, "unauthorized");
+  const { seconds } = await req.json();
+  const s = Math.max(0, Math.round(Number(seconds) || 0));
+  if (s === 0) return json(200, { credit_seconds: 0 });
+  // Floor at 0 so a long call can't drive the balance negative.
+  await env.DB.prepare(
+    "UPDATE subscriptions SET credit_seconds = MAX(0, credit_seconds - ?), updated_at = ? WHERE owner = ?"
+  ).bind(s, new Date().toISOString(), uid).run();
+  const row = await env.DB.prepare("SELECT credit_seconds FROM subscriptions WHERE owner = ?").bind(uid).first();
+  return json(200, { credit_seconds: row?.credit_seconds || 0 });
 }
 
 // POST /v1/voice/clone (multipart: file=audio, attest="true", agentId) — consented
@@ -486,7 +510,18 @@ async function dialRoute(req, env) {
   return json(501, { error: "dialing not yet wired", consent: "ok" });
 }
 
-// ---- billing (Stripe) ------------------------------------------------------
+// ---- billing (Stripe) — prepaid CALL HOURS, volume pricing -----------------
+// Per-hour price declines from $20 toward a $9/hr floor as packs get bigger.
+// Calls debit actual seconds of talk time. Edit freely; this is the price sheet.
+const MIN_START_SECONDS = 60;  // need at least a minute of balance to start a call
+const CREDIT_PACKS = [
+  { id: "1hr",   hours: 1,   price_cents: 2000 },  // $20/hr
+  { id: "5hr",   hours: 5,   price_cents: 9000 },  // $18/hr
+  { id: "20hr",  hours: 20,  price_cents: 28000 }, // $14/hr
+  { id: "50hr",  hours: 50,  price_cents: 55000 }, // $11/hr
+  { id: "100hr", hours: 100, price_cents: 90000 }, // $9/hr (floor)
+];
+
 const bytesToHex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 
 /// POST to Stripe's form-encoded API with the secret key.
@@ -503,14 +538,24 @@ async function stripe(env, path, params) {
   return res.json();
 }
 
-// POST /v1/billing/checkout -> { url } : a Stripe Checkout subscription session
-// tied to the signed-in account (Apple sub). Pay on the web → 0% to Apple.
+// GET /v1/billing/packs -> the price sheet (hours, price, per-hour).
+function packsRoute() {
+  return json(200, CREDIT_PACKS.map((p) => ({
+    ...p, per_hour_cents: Math.round(p.price_cents / p.hours),
+  })));
+}
+
+// POST /v1/billing/checkout { packId } -> { url } : one-time Checkout for a credit
+// pack, tied to the Apple sub. Pay on the web → 0% to Apple.
 async function checkoutRoute(req, env) {
   const uid = await requireUser(req, env);
   if (!uid) return err(401, "unauthorized");
   if (!env.STRIPE_SECRET) return err(503, "billing not configured");
+  const { packId } = await req.json();
+  const pack = CREDIT_PACKS.find((p) => p.id === packId);
+  if (!pack) return err(400, "unknown pack");
 
-  // Reuse the account's Stripe customer or make one keyed to the Apple sub.
+  // Reuse or create the account's Stripe customer.
   let row = await env.DB.prepare("SELECT stripe_customer_id FROM subscriptions WHERE owner = ?").bind(uid).first();
   let customer = row?.stripe_customer_id;
   if (!customer) {
@@ -522,12 +567,17 @@ async function checkoutRoute(req, env) {
   }
   const origin = new URL(req.url).origin;
   const session = await stripe(env, "checkout/sessions", {
-    mode: "subscription",
+    mode: "payment",
     customer,
-    "line_items[0][price]": env.STRIPE_PRICE_PRO,
+    "line_items[0][price_data][currency]": "usd",
+    "line_items[0][price_data][unit_amount]": String(pack.price_cents),
+    "line_items[0][price_data][product_data][name]": `LifeCall — ${pack.hours} hours of call time`,
     "line_items[0][quantity]": "1",
     client_reference_id: uid,
-    "subscription_data[metadata][apple_sub]": uid,
+    "payment_intent_data[metadata][apple_sub]": uid,
+    "payment_intent_data[metadata][credit_seconds]": String(pack.hours * 3600),
+    "metadata[apple_sub]": uid,
+    "metadata[credit_seconds]": String(pack.hours * 3600),
     success_url: `${origin}/billing/success`,
     cancel_url: `${origin}/billing/success`,
   });
@@ -535,16 +585,16 @@ async function checkoutRoute(req, env) {
   return json(200, { url: session.url });
 }
 
-// GET /v1/billing/status -> { tier, status, active }
+// GET /v1/billing/status -> { seconds, can_call }
 async function billingStatusRoute(req, env) {
   const uid = await requireUser(req, env);
   if (!uid) return err(401, "unauthorized");
-  const row = await env.DB.prepare("SELECT tier, status FROM subscriptions WHERE owner = ?").bind(uid).first();
-  const active = row?.status === "active" || row?.status === "trialing";
-  return json(200, { tier: row?.tier || null, status: row?.status || null, active });
+  const row = await env.DB.prepare("SELECT credit_seconds FROM subscriptions WHERE owner = ?").bind(uid).first();
+  const seconds = row?.credit_seconds || 0;
+  return json(200, { seconds, can_call: seconds >= MIN_START_SECONDS });
 }
 
-// POST /v1/stripe/webhook — verify signature, sync subscription state into D1.
+// POST /v1/stripe/webhook — verify signature, credit the account on purchase.
 async function stripeWebhookRoute(req, env) {
   const sig = req.headers.get("stripe-signature") || "";
   const raw = await req.text();
@@ -557,27 +607,16 @@ async function stripeWebhookRoute(req, env) {
   if (bytesToHex(mac) !== parts.v1) return err(400, "bad signature");
 
   const event = JSON.parse(raw);
-  const obj = event.data?.object || {};
-  const uid = obj.metadata?.apple_sub || obj.client_reference_id;
-  const customer = obj.customer;
-  const now = new Date().toISOString();
-
   if (event.type === "checkout.session.completed") {
-    await env.DB.prepare(
-      `INSERT INTO subscriptions (owner, stripe_customer_id, stripe_subscription_id, tier, status, updated_at)
-       VALUES (?,?,?,?,?,?) ON CONFLICT(owner) DO UPDATE SET stripe_subscription_id=excluded.stripe_subscription_id,
-       tier=excluded.tier, status=excluded.status, updated_at=excluded.updated_at`
-    ).bind(uid, customer, obj.subscription || null, "pro", "active", now).run();
-  } else if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
-    const status = event.type.endsWith("deleted") ? "canceled" : obj.status;
-    const periodEnd = obj.current_period_end ? new Date(obj.current_period_end * 1000).toISOString() : null;
-    // Match by apple_sub metadata, else by customer id.
-    if (uid) {
-      await env.DB.prepare("UPDATE subscriptions SET status=?, current_period_end=?, updated_at=? WHERE owner=?")
-        .bind(status, periodEnd, now, uid).run();
-    } else if (customer) {
-      await env.DB.prepare("UPDATE subscriptions SET status=?, current_period_end=?, updated_at=? WHERE stripe_customer_id=?")
-        .bind(status, periodEnd, now, customer).run();
+    const obj = event.data.object;
+    const uid = obj.metadata?.apple_sub || obj.client_reference_id;
+    const add = parseInt(obj.metadata?.credit_seconds || "0", 10);
+    if (uid && add > 0) {
+      const now = new Date().toISOString();
+      await env.DB.prepare(
+        `INSERT INTO subscriptions (owner, stripe_customer_id, credit_seconds, updated_at) VALUES (?,?,?,?)
+         ON CONFLICT(owner) DO UPDATE SET credit_seconds = credit_seconds + ?, updated_at = ?`
+      ).bind(uid, obj.customer || null, add, now, add, now).run();
     }
   }
   return json(200, { received: true });

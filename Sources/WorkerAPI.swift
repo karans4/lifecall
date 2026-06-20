@@ -147,20 +147,33 @@ enum WorkerAPI {
         return obj?["voice_id"] as? String ?? ""
     }
 
-    // MARK: Billing (Stripe via web — 0% to Apple)
+    // MARK: Billing (prepaid call hours via Stripe web — 0% to Apple)
 
-    /// Create a Stripe Checkout session and return its URL (open in a browser).
-    static func checkoutURL() async throws -> String {
-        let data = try await request("/v1/billing/checkout", method: "POST", json: [:])
+    struct Pack: Decodable, Identifiable { let id: String; let hours: Int; let price_cents: Int; let per_hour_cents: Int }
+
+    /// The price sheet (call-hour packs, volume pricing).
+    static func packs() async throws -> [Pack] {
+        let data = try await request("/v1/billing/packs")
+        return try JSONDecoder().decode([Pack].self, from: data)
+    }
+
+    /// Create a Checkout session for a pack; returns the URL to open in a browser.
+    static func checkoutURL(packId: String) async throws -> String {
+        let data = try await request("/v1/billing/checkout", method: "POST", json: ["packId": packId])
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         return obj?["url"] as? String ?? ""
     }
 
-    /// Current subscription state for the signed-in account.
-    static func billingStatus() async throws -> (tier: String?, active: Bool) {
+    /// Remaining call time (seconds) for the signed-in account.
+    static func balanceSeconds() async throws -> Int {
         let data = try await request("/v1/billing/status")
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        return (obj?["tier"] as? String, obj?["active"] as? Bool ?? false)
+        return obj?["seconds"] as? Int ?? 0
+    }
+
+    /// Report a finished call's duration so the Worker debits the balance.
+    static func callEnded(seconds: Int) async throws {
+        _ = try await request("/v1/calls/end", method: "POST", json: ["seconds": seconds])
     }
 
     // MARK: Outbound dial (consent-gated server-side)

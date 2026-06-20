@@ -25,9 +25,10 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   owner                TEXT PRIMARY KEY,        -- Apple user id (sub)
   stripe_customer_id   TEXT,
   stripe_subscription_id TEXT,
-  tier                 TEXT,                    -- e.g. 'pro'
-  status               TEXT,                    -- active/trialing/past_due/canceled
+  tier                 TEXT,                    -- legacy (subscription); credits model below
+  status               TEXT,
   current_period_end   TEXT,
+  credits_cents        INTEGER NOT NULL DEFAULT 0,  -- prepaid balance; each call debits CALL_COST_CENTS
   updated_at           TEXT NOT NULL
 );
 

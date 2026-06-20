@@ -9,8 +9,8 @@ struct ContentView: View {
     @State private var pulse = false
     @State private var selectedLead: Lead?
     @State private var showVoiceClone = false
-    @State private var isPro = false
-    @Environment(\.openURL) private var openURL
+    @State private var balanceSeconds = 0
+    @State private var showBilling = false
 
     private var isLive: Bool { voice.state == .active }
 
@@ -25,7 +25,7 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         .onAppear {
             voice.refreshLeads()
-            Task { isPro = (try? await WorkerAPI.billingStatus().active) ?? false }
+            refreshBalance()
         }
         .sheet(item: $selectedLead) { lead in
             LeadDetailView(lead: lead)
@@ -60,6 +60,16 @@ struct ContentView: View {
         }
     }
 
+    private var balanceLabel: String {
+        let mins = balanceSeconds / 60
+        if mins >= 60 { return String(format: "%.1f hrs left", Double(balanceSeconds) / 3600) }
+        return "\(mins) min left"
+    }
+
+    private func refreshBalance() {
+        Task { balanceSeconds = (try? await WorkerAPI.balanceSeconds()) ?? 0 }
+    }
+
     private func hideKeyboard() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
@@ -80,18 +90,15 @@ struct ContentView: View {
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.55))
 
-            if !isPro {
-                Button {
-                    Task { if let s = try? await WorkerAPI.checkoutURL(), let u = URL(string: s) { openURL(u) } }
-                } label: {
-                    Label("Upgrade to Pro", systemImage: "sparkles")
-                        .font(.caption.bold())
-                        .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(Capsule().fill(LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing)))
-                        .foregroundStyle(.white)
-                }
-                .padding(.top, 4)
+            Button { showBilling = true } label: {
+                Label(balanceLabel, systemImage: "clock.badge.checkmark")
+                    .font(.caption.bold())
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(Capsule().fill(LinearGradient(colors: [.cyan, .blue], startPoint: .leading, endPoint: .trailing)))
+                    .foregroundStyle(.white)
             }
+            .padding(.top, 4)
+            .sheet(isPresented: $showBilling, onDismiss: { refreshBalance() }) { BillingView() }
         }
         .padding(.top, 8)
     }
