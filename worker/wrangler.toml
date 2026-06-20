@@ -23,11 +23,10 @@ binding = "DB"
 database_name = "lifecall"
 database_id = "e0348236-8072-4a5c-9ee6-7cd2c93e6e60"
 
-# Private object storage for generated PDFs. ENABLE R2 in the Cloudflare dashboard,
-# then run `wrangler r2 bucket create lifecall-documents` and uncomment this.
-# [[r2_buckets]]
-# binding = "DOCS"
-# bucket_name = "lifecall-documents"
+# Private object storage for generated PDFs (served via owner-scoped worker routes).
+[[r2_buckets]]
+binding = "DOCS"
+bucket_name = "lifecall-documents"
 
 # Secrets (set with: npx wrangler secret put <NAME>)
 #   OPENROUTER_API_KEY   - OpenRouter inference key
