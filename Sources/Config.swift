@@ -10,5 +10,5 @@ enum Config {
 
     /// ElevenLabs Conversational AI agent id (not a secret; the signed URL that
     /// authorizes a session is fetched from the Worker).
-    static let elevenLabsAgentId = "REPLACE_WITH_AGENT_ID"
+    static let elevenLabsAgentId = "agent_3101kvhs4g20f01t75rbs6bj8702"
 }
