@@ -511,15 +511,15 @@ async function dialRoute(req, env) {
 }
 
 // ---- billing (Stripe) — prepaid CALL HOURS, volume pricing -----------------
-// Per-hour price declines from $20 toward a $9/hr floor as packs get bigger.
+// Per-hour price declines from $20 toward a $12/hr floor as packs get bigger.
 // Calls debit actual seconds of talk time. Edit freely; this is the price sheet.
 const MIN_START_SECONDS = 60;  // need at least a minute of balance to start a call
 const CREDIT_PACKS = [
-  { id: "1hr",   hours: 1,   price_cents: 2000 },  // $20/hr
-  { id: "5hr",   hours: 5,   price_cents: 9000 },  // $18/hr
-  { id: "20hr",  hours: 20,  price_cents: 28000 }, // $14/hr
-  { id: "50hr",  hours: 50,  price_cents: 55000 }, // $11/hr
-  { id: "100hr", hours: 100, price_cents: 90000 }, // $9/hr (floor)
+  { id: "1hr",   hours: 1,   price_cents: 2000 },   // $20/hr
+  { id: "5hr",   hours: 5,   price_cents: 9000 },   // $18/hr
+  { id: "20hr",  hours: 20,  price_cents: 30000 },  // $15/hr
+  { id: "50hr",  hours: 50,  price_cents: 65000 },  // $13/hr
+  { id: "100hr", hours: 100, price_cents: 120000 }, // $12/hr (floor)
 ];
 
 const bytesToHex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
