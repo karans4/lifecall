@@ -20,6 +20,17 @@ CREATE TABLE IF NOT EXISTS leads (
   created_at      TEXT NOT NULL
 );
 
+-- Billing: one row per account (Apple sub), synced from Stripe webhooks.
+CREATE TABLE IF NOT EXISTS subscriptions (
+  owner                TEXT PRIMARY KEY,        -- Apple user id (sub)
+  stripe_customer_id   TEXT,
+  stripe_subscription_id TEXT,
+  tier                 TEXT,                    -- e.g. 'pro'
+  status               TEXT,                    -- active/trialing/past_due/canceled
+  current_period_end   TEXT,
+  updated_at           TEXT NOT NULL
+);
+
 -- Owner-authored playbooks (the in-app editor syncs JSON here). Each owner has
 -- one active playbook that drives live calls + the post-call pipeline.
 CREATE TABLE IF NOT EXISTS playbooks (

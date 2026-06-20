@@ -181,6 +181,10 @@ export default {
       if (req.method === "POST" && path === "/v1/voice/token") return voiceTokenRoute(req, env);
       if (req.method === "POST" && path === "/v1/voice/clone") return voiceCloneRoute(req, env);
       if (req.method === "POST" && path === "/v1/dial") return dialRoute(req, env);
+      if (req.method === "POST" && path === "/v1/billing/checkout") return checkoutRoute(req, env);
+      if (req.method === "GET" && path === "/v1/billing/status") return billingStatusRoute(req, env);
+      if (req.method === "POST" && path === "/v1/stripe/webhook") return stripeWebhookRoute(req, env);
+      if (req.method === "GET" && path === "/billing/success") return new Response("<h2>You're all set — return to LifeCall.</h2>", { headers: { "content-type": "text/html" } });
       return err(404, "not found");
     } catch (e) {
       return err(500, String(e?.message || e));
@@ -480,4 +484,101 @@ async function dialRoute(req, env) {
   if (!row) return err(403, "no consent on file for this number");
   // TODO(phase 2): trigger ElevenLabs agent outbound call via Twilio.
   return json(501, { error: "dialing not yet wired", consent: "ok" });
+}
+
+// ---- billing (Stripe) ------------------------------------------------------
+const bytesToHex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+/// POST to Stripe's form-encoded API with the secret key.
+async function stripe(env, path, params) {
+  const body = new URLSearchParams(params).toString();
+  const res = await fetch(`https://api.stripe.com/v1/${path}`, {
+    method: "POST",
+    headers: {
+      authorization: "Basic " + btoa(env.STRIPE_SECRET + ":"),
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+  return res.json();
+}
+
+// POST /v1/billing/checkout -> { url } : a Stripe Checkout subscription session
+// tied to the signed-in account (Apple sub). Pay on the web → 0% to Apple.
+async function checkoutRoute(req, env) {
+  const uid = await requireUser(req, env);
+  if (!uid) return err(401, "unauthorized");
+  if (!env.STRIPE_SECRET) return err(503, "billing not configured");
+
+  // Reuse the account's Stripe customer or make one keyed to the Apple sub.
+  let row = await env.DB.prepare("SELECT stripe_customer_id FROM subscriptions WHERE owner = ?").bind(uid).first();
+  let customer = row?.stripe_customer_id;
+  if (!customer) {
+    const c = await stripe(env, "customers", { "metadata[apple_sub]": uid });
+    customer = c.id;
+    await env.DB.prepare(
+      "INSERT INTO subscriptions (owner, stripe_customer_id, updated_at) VALUES (?,?,?) ON CONFLICT(owner) DO UPDATE SET stripe_customer_id=excluded.stripe_customer_id"
+    ).bind(uid, customer, new Date().toISOString()).run();
+  }
+  const origin = new URL(req.url).origin;
+  const session = await stripe(env, "checkout/sessions", {
+    mode: "subscription",
+    customer,
+    "line_items[0][price]": env.STRIPE_PRICE_PRO,
+    "line_items[0][quantity]": "1",
+    client_reference_id: uid,
+    "subscription_data[metadata][apple_sub]": uid,
+    success_url: `${origin}/billing/success`,
+    cancel_url: `${origin}/billing/success`,
+  });
+  if (!session.url) return err(502, "checkout failed: " + JSON.stringify(session).slice(0, 200));
+  return json(200, { url: session.url });
+}
+
+// GET /v1/billing/status -> { tier, status, active }
+async function billingStatusRoute(req, env) {
+  const uid = await requireUser(req, env);
+  if (!uid) return err(401, "unauthorized");
+  const row = await env.DB.prepare("SELECT tier, status FROM subscriptions WHERE owner = ?").bind(uid).first();
+  const active = row?.status === "active" || row?.status === "trialing";
+  return json(200, { tier: row?.tier || null, status: row?.status || null, active });
+}
+
+// POST /v1/stripe/webhook — verify signature, sync subscription state into D1.
+async function stripeWebhookRoute(req, env) {
+  const sig = req.headers.get("stripe-signature") || "";
+  const raw = await req.text();
+  const parts = Object.fromEntries(sig.split(",").map((kv) => kv.split("=")));
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(env.STRIPE_WEBHOOK_SECRET),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${parts.t}.${raw}`));
+  if (bytesToHex(mac) !== parts.v1) return err(400, "bad signature");
+
+  const event = JSON.parse(raw);
+  const obj = event.data?.object || {};
+  const uid = obj.metadata?.apple_sub || obj.client_reference_id;
+  const customer = obj.customer;
+  const now = new Date().toISOString();
+
+  if (event.type === "checkout.session.completed") {
+    await env.DB.prepare(
+      `INSERT INTO subscriptions (owner, stripe_customer_id, stripe_subscription_id, tier, status, updated_at)
+       VALUES (?,?,?,?,?,?) ON CONFLICT(owner) DO UPDATE SET stripe_subscription_id=excluded.stripe_subscription_id,
+       tier=excluded.tier, status=excluded.status, updated_at=excluded.updated_at`
+    ).bind(uid, customer, obj.subscription || null, "pro", "active", now).run();
+  } else if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
+    const status = event.type.endsWith("deleted") ? "canceled" : obj.status;
+    const periodEnd = obj.current_period_end ? new Date(obj.current_period_end * 1000).toISOString() : null;
+    // Match by apple_sub metadata, else by customer id.
+    if (uid) {
+      await env.DB.prepare("UPDATE subscriptions SET status=?, current_period_end=?, updated_at=? WHERE owner=?")
+        .bind(status, periodEnd, now, uid).run();
+    } else if (customer) {
+      await env.DB.prepare("UPDATE subscriptions SET status=?, current_period_end=?, updated_at=? WHERE stripe_customer_id=?")
+        .bind(status, periodEnd, now, customer).run();
+    }
+  }
+  return json(200, { received: true });
 }
