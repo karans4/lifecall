@@ -9,6 +9,9 @@ packages:
   ElevenLabs:
     url: https://github.com/elevenlabs/elevenlabs-swift-sdk
     from: 2.0.0
+  LiveKit:
+    url: https://github.com/livekit/client-sdk-swift
+    from: 2.6.0
 
 settings:
   base:
@@ -28,6 +31,7 @@ targets:
       - Sources
     dependencies:
       - package: ElevenLabs
+      - package: LiveKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.halo.lifecall

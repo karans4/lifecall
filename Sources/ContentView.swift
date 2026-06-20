@@ -131,6 +131,17 @@ struct ContentView: View {
                 .font(.footnote)
                 .foregroundStyle(.white.opacity(0.5))
 
+            if isLive {
+                Button { voice.speakerOn.toggle() } label: {
+                    Label(voice.speakerOn ? "Speaker" : "Earpiece",
+                          systemImage: voice.speakerOn ? "speaker.wave.2.fill" : "ear")
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Capsule().fill(.white.opacity(0.12)))
+                        .foregroundStyle(.white)
+                }
+            }
+
             Button { showVoiceClone = true } label: {
                 Label("Use my voice", systemImage: "waveform.badge.mic")
                     .font(.caption.weight(.medium))

@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import ElevenLabs
+import LiveKit
 
 /// In-app live voice via ElevenLabs Conversational AI (replaces Vapi). The agent
 /// runs on ElevenLabs (STT + turn-taking + premium TTS); its LLM is our Worker's
@@ -16,6 +17,8 @@ final class VoiceManager: ObservableObject {
     @Published var savingLead = false
     @Published var runningCallbacks = false
     @Published var callbackResult = ""
+    /// Earpiece by default (held-to-ear volume); user can flip to loudspeaker.
+    @Published var speakerOn = false { didSet { AudioManager.shared.isSpeakerOutputPreferred = speakerOn } }
 
     struct TranscriptLine: Identifiable {
         let id = UUID()
@@ -30,6 +33,8 @@ final class VoiceManager: ObservableObject {
     func start() {
         state = .connecting
         transcript.removeAll()
+        // Route to the earpiece, not the loudspeaker, unless the user chose speaker.
+        AudioManager.shared.isSpeakerOutputPreferred = speakerOn
         Task {
             do {
                 let convo = try await ElevenLabs.startConversation(
