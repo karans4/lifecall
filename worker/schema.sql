@@ -15,7 +15,20 @@ CREATE TABLE IF NOT EXISTS leads (
   transcript      TEXT,
   summary         TEXT,
   fact_find       TEXT,                        -- JSON blob
+  urgency         TEXT,                        -- playbook tier name (Hot/Warm/Cold)
+  playbook_id     TEXT,
   created_at      TEXT NOT NULL
+);
+
+-- Owner-authored playbooks (the in-app editor syncs JSON here). Each owner has
+-- one active playbook that drives live calls + the post-call pipeline.
+CREATE TABLE IF NOT EXISTS playbooks (
+  id          TEXT NOT NULL,
+  owner       TEXT NOT NULL,
+  json        TEXT NOT NULL,                   -- the full Playbook as JSON
+  active      INTEGER NOT NULL DEFAULT 0,
+  updated_at  TEXT NOT NULL,
+  PRIMARY KEY (owner, id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_leads_owner       ON leads(owner, created_at DESC);

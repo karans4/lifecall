@@ -9,6 +9,10 @@
 //
 // Keys live only here as Wrangler secrets — never in the client.
 
+import {
+  DEFAULT_PLAYBOOK, buildSystemPrompt, buildExtractionPrompt, routeDocuments, plannedAction,
+} from "./playbook.js";
+
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS",
@@ -128,6 +132,36 @@ async function meter(env, uid) {
   return null;
 }
 
+// ---- playbook helpers ------------------------------------------------------
+async function activePlaybook(env, owner) {
+  try {
+    const row = await env.DB.prepare(
+      "SELECT json FROM playbooks WHERE owner = ? AND active = 1 LIMIT 1"
+    ).bind(owner).first();
+    if (row?.json) return JSON.parse(row.json);
+  } catch {}
+  return DEFAULT_PLAYBOOK;
+}
+
+/// Internal non-streaming OpenRouter call (US-pinned), returns message content.
+async function callLLM(env, messages, { jsonMode = false } = {}) {
+  const body = { model: env.OPENROUTER_MODEL, messages, temperature: 0.2 };
+  if (jsonMode) body.response_format = { type: "json_object" };
+  if (env.OPENROUTER_PROVIDERS) {
+    body.provider = {
+      only: env.OPENROUTER_PROVIDERS.split(",").map((s) => s.trim()),
+      data_collection: "deny", allow_fallbacks: true,
+    };
+  }
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${env.OPENROUTER_API_KEY}` },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  return data?.choices?.[0]?.message?.content ?? "";
+}
+
 // ---- routes ----------------------------------------------------------------
 export default {
   async fetch(req, env) {
@@ -138,6 +172,9 @@ export default {
       if (req.method === "POST" && path === "/v1/auth") return authRoute(req, env);
       if (req.method === "POST" && path === "/v1/chat/completions") return chatRoute(req, env);
       if (path === "/v1/leads") return leadsRoute(req, env);
+      if (req.method === "POST" && path === "/v1/leads/extract") return extractRoute(req, env);
+      if (path === "/v1/playbooks") return playbooksRoute(req, env);
+      if (req.method === "POST" && path === "/v1/playbooks/activate") return activatePlaybookRoute(req, env);
       if (req.method === "POST" && path === "/v1/documents") return uploadDoc(req, env);
       if (req.method === "GET" && path.startsWith("/v1/documents/")) return serveDoc(req, env, path);
       if (req.method === "POST" && path === "/v1/email") return emailRoute(req, env);
@@ -176,6 +213,16 @@ async function chatRoute(req, env) {
 
   const body = await req.json();
   if (!body.model || body.model === "default") body.model = env.OPENROUTER_MODEL;
+
+  // Inject the owner's active playbook as the system prompt if the caller (e.g.
+  // ElevenLabs' agent) didn't already supply one. This is what makes the live
+  // call follow the configured script.
+  const msgs = body.messages || [];
+  if (!msgs.some((m) => m.role === "system") && uid !== "agent") {
+    const pb = await activePlaybook(env, uid);
+    body.messages = [{ role: "system", content: buildSystemPrompt(pb) }, ...msgs];
+  }
+
   // Pin to US-based inference hosts and forbid any provider that logs/trains on
   // prompts — keeps the (open-weight) model's data on US soil for PII compliance.
   if (env.OPENROUTER_PROVIDERS) {
@@ -237,6 +284,82 @@ async function leadsRoute(req, env) {
 }
 
 const rowToLead = (r) => ({ ...r, fact_find: r.fact_find ? JSON.parse(r.fact_find) : null });
+
+// POST /v1/leads/extract { transcript } — the playbook-driven pipeline:
+// extract collect[] fields + summary + fact_find + outcome, score urgency, route
+// documents, save the lead, and report the planned auto-action.
+async function extractRoute(req, env) {
+  const uid = await requireUser(req, env);
+  if (!uid) return err(401, "unauthorized");
+  const { transcript } = await req.json();
+  if (!transcript) return err(400, "transcript required");
+  if (!env.OPENROUTER_API_KEY) return err(503, "LLM not configured");
+
+  const pb = await activePlaybook(env, uid);
+  const nowISO = new Date().toISOString();
+  const content = await callLLM(env, [
+    { role: "user", content: buildExtractionPrompt(pb, transcript, nowISO) },
+  ], { jsonMode: true });
+
+  let lead;
+  try { lead = JSON.parse(content); } catch { return err(502, "extraction parse failed"); }
+  // Skip dead/no-audio calls.
+  if (!lead.name && !lead.email && !lead.phone) return json(200, { skipped: true });
+
+  const id = crypto.randomUUID();
+  lead.id = id;
+  await env.DB.prepare(
+    `INSERT INTO leads (id,owner,name,age,coverage_type,coverage_amount,monthly_budget,outcome,
+      email,phone,callback_at,callback_status,transcript,summary,fact_find,urgency,playbook_id,created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    id, uid, lead.name ?? null, lead.age ?? null, lead.coverage_type ?? null,
+    lead.coverage_amount ?? null, lead.monthly_budget ?? null, lead.outcome ?? null,
+    lead.email ?? null, lead.phone ?? null, lead.callback_at ?? null, "pending",
+    transcript, lead.summary ?? null, lead.fact_find ? JSON.stringify(lead.fact_find) : null,
+    lead.urgency ?? null, pb.id, nowISO
+  ).run();
+
+  const documents = routeDocuments(pb, lead);
+  const action = plannedAction(pb, lead);   // execution (email/book/dial) wired in later phases
+  return json(200, { lead, urgency: lead.urgency, documents, action });
+}
+
+// GET /v1/playbooks -> owner's playbooks ; POST upsert { id, json, active }
+async function playbooksRoute(req, env) {
+  const uid = await requireUser(req, env);
+  if (!uid) return err(401, "unauthorized");
+  if (req.method === "GET") {
+    const { results } = await env.DB.prepare(
+      "SELECT id, json, active FROM playbooks WHERE owner = ?"
+    ).bind(uid).all();
+    const list = results.map((r) => ({ ...JSON.parse(r.json), active: !!r.active }));
+    return json(200, list.length ? list : [{ ...DEFAULT_PLAYBOOK, active: true }]);
+  }
+  if (req.method === "POST") {
+    const pb = await req.json();
+    if (!pb.id) return err(400, "playbook id required");
+    await env.DB.prepare(
+      `INSERT INTO playbooks (id, owner, json, active, updated_at) VALUES (?,?,?,?,?)
+       ON CONFLICT(owner, id) DO UPDATE SET json=excluded.json, updated_at=excluded.updated_at`
+    ).bind(pb.id, uid, JSON.stringify(pb), pb.active ? 1 : 0, new Date().toISOString()).run();
+    return json(200, { id: pb.id });
+  }
+  return err(405, "method not allowed");
+}
+
+// POST /v1/playbooks/activate { id } — exactly one active per owner.
+async function activatePlaybookRoute(req, env) {
+  const uid = await requireUser(req, env);
+  if (!uid) return err(401, "unauthorized");
+  const { id } = await req.json();
+  if (!id) return err(400, "id required");
+  await env.DB.batch([
+    env.DB.prepare("UPDATE playbooks SET active = 0 WHERE owner = ?").bind(uid),
+    env.DB.prepare("UPDATE playbooks SET active = 1 WHERE owner = ? AND id = ?").bind(uid, id),
+  ]);
+  return json(200, { active: id });
+}
 
 // POST /v1/documents (multipart 'file', ?key=) -> { url } (owner-scoped private)
 async function uploadDoc(req, env) {
